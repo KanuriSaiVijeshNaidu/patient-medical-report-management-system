@@ -63,13 +63,21 @@ def get_current_user(
                 )
         except Exception as e:
             err_str = str(e).lower()
-            if "invalid" in err_str or "expired" in err_str or "bad jwt" in err_str:
+            # If the Supabase Auth server explicitly rejected the token
+            status_code = getattr(e, "status", None) or getattr(e, "code", None)
+            is_auth_rejection = (
+                status_code in [400, 401, 403]
+                or any(keyword in err_str for keyword in [
+                    "invalid", "expired", "jwt", "unauthorized", "signature", "malformed", "not found"
+                ])
+            )
+            if is_auth_rejection:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid or expired authentication token.",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-            # If network error or client misconfiguration, fall through to JWT secret verification
+            # If network/connectivity error (e.g. timeout, DNS, connection refused), fall through to JWT secret verification
             pass
 
     # 2. Cryptographic JWT verification using SUPABASE_JWT_SECRET

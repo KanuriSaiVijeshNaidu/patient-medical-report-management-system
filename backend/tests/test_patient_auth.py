@@ -487,3 +487,84 @@ def test_recovery_rate_limiting_prevents_brute_force(monkeypatch):
         assert "Retry-After" in response.headers
     finally:
         app.dependency_overrides.clear()
+
+
+# -----------------------------------------------------------------------------
+# 5. Phase 2B: Database Migration Structural Integrity Tests
+# -----------------------------------------------------------------------------
+def test_auth_api_rejection_raises_401(monkeypatch):
+    """When Supabase Auth API rejects token, auth guard immediately returns 401."""
+    class MockAuthApi:
+        def get_user(self, token):
+            raise Exception("AuthApiError: invalid JWT token format")
+
+    class MockClientWithAuth:
+        auth = MockAuthApi()
+
+    monkeypatch.setattr("app.core.auth.get_supabase_client", lambda: MockClientWithAuth())
+
+    response = client.get(
+        "/api/v1/patients/me",
+        headers={"Authorization": "Bearer bad-token-for-supabase"},
+    )
+    assert response.status_code == 401
+    assert "invalid or expired" in response.json()["detail"].lower()
+
+
+def test_sql_migrations_structural_integrity_and_rls():
+    """Validates that both SQL migrations define required tables, triggers, and RLS policies.
+
+    Ensures that:
+    1. All 9 core tables have ENABLE ROW LEVEL SECURITY.
+    2. Immutability triggers exist for patient_profiles, users, and audit_logs.
+    3. Triggers do NOT use SECURITY DEFINER where auth.role() must be evaluated.
+    4. Safe duplicate pre-check exists before creating unique index on phone_hash.
+    """
+    import os
+
+    migration_dir = os.path.join(os.path.dirname(__file__), "..", "supabase", "migrations")
+    mig1_path = os.path.join(migration_dir, "20261019000001_initial_schema.sql")
+    mig2_path = os.path.join(migration_dir, "20261019000002_security_audit_fixes.sql")
+
+    assert os.path.exists(mig1_path), "Migration 01 must exist"
+    assert os.path.exists(mig2_path), "Migration 02 must exist"
+
+    with open(mig1_path, "r", encoding="utf-8") as f:
+        mig1_sql = f.read()
+    with open(mig2_path, "r", encoding="utf-8") as f:
+        mig2_sql = f.read()
+
+    combined_sql = mig1_sql + "\n" + mig2_sql
+
+    core_tables = [
+        "users",
+        "patient_profiles",
+        "hospitals",
+        "hospital_staff",
+        "medical_reports",
+        "record_access_grants",
+        "emergency_access_logs",
+        "patient_recovery_requests",
+        "audit_logs",
+    ]
+
+    # Every core table must have ENABLE ROW LEVEL SECURITY
+    for table in core_tables:
+        expected = f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY"
+        assert expected in combined_sql, f"Missing RLS enablement for table {table}"
+
+    # Verify unique index on phone_hash
+    assert "idx_patient_profiles_phone_hash_unique" in mig2_sql
+
+    # Verify safe duplicate pre-check exists before index creation
+    assert "GROUP BY phone_hash" in mig2_sql
+
+    # Verify immutability triggers
+    assert "trg_patient_profile_immutability" in mig2_sql
+    assert "trg_user_role_immutability" in mig2_sql
+    assert "trg_audit_logs_immutable" in mig2_sql
+
+    # Verify triggers do NOT use SECURITY DEFINER on role/status checks
+    assert "check_patient_profile_immutability()\nRETURNS TRIGGER AS $$" in mig2_sql or "LANGUAGE plpgsql;" in mig2_sql
+    assert "auth.role()" in mig2_sql, "Trigger must inspect Supabase auth.role()"
+

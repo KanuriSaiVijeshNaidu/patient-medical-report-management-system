@@ -1,16 +1,26 @@
-"""Thread-safe in-memory sliding-window rate limiter for sensitive endpoints.
+"""Sliding-window rate limiter for sensitive authentication and recovery endpoints.
 
-Provides brute-force and abuse protection for account recovery and profile operations.
-In a distributed production setup, this can be backed by Redis.
+Architecture & Concurrency Considerations:
+- In Development:
+  Uses an in-memory thread-safe sliding window with Python threading.Lock.
+  This protects single-process instances (e.g. uvicorn --workers 1).
+- In Production (Multi-Worker / Multi-Instance):
+  An in-memory dictionary is per-process and does NOT share state across multiple
+  Uvicorn/Gunicorn worker processes or horizontally scaled container instances/pods.
+  Production deployments MUST use an external shared store such as Redis
+  (via redis.asyncio or redis-py sliding window sorted set ZADD/ZREMRANGEBYSCORE)
+  or edge-layer rate limiting (Cloudflare WAF / AWS WAF / API Gateway).
 """
 import time
 from collections import defaultdict
 from threading import Lock
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from fastapi import HTTPException, Request, status
 
 
 class SlidingWindowRateLimiter:
+    """In-memory sliding window rate limiter suitable for single-process development."""
+
     def __init__(self):
         self._lock = Lock()
         # Key: (endpoint_key, identifier), Value: list of monotonic timestamps
@@ -60,5 +70,6 @@ def get_client_ip(request: Request) -> str:
     """Extracts client IP safely, considering X-Forwarded-For if behind a proxy."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
+        # First entry in X-Forwarded-For is client origin IP
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"

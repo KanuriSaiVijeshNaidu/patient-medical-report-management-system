@@ -1,29 +1,71 @@
 -- ==============================================================================
--- Security Audit Fixes & Database-Level Enforcements
+-- Security Audit Fixes & Database-Level Enforcements (Phase 2B Validated)
 -- Version: 20261019000002
 -- Engine: PostgreSQL 15+ / Supabase
 -- Description:
---   1. Race-safe unique constraint on phone_hash (database-level deduplication).
---   2. Immutability triggers on patient_profiles (patient_id, user_id, verification_status).
---   3. Immutability trigger on users (role privilege escalation prevention).
---   4. Immutable audit trail enforcement (disallow UPDATE and DELETE on audit logs).
---   5. Strengthened RLS policies for patient recovery and audit trails.
+--   1. Safe pre-check and race-safe unique constraint on phone_hash.
+--   2. Enable RLS on previously omitted tables (hospitals, hospital_staff).
+--   3. Immutability trigger on patient_profiles (SECURITY INVOKER, auth.role() check).
+--   4. Immutability trigger on users (SECURITY INVOKER, auth.role() privilege check).
+--   5. Append-only enforcement on audit_logs and emergency_access_logs.
+--   6. Hardened RLS policies for audit_logs and patient_recovery_requests.
 -- ==============================================================================
 
 -- ------------------------------------------------------------------------------
--- 1. RACE-SAFE DATABASE-LEVEL DEDUPLICATION
+-- 1. RACE-SAFE DEDUPLICATION WITH SAFE PRE-CHECK
 -- ------------------------------------------------------------------------------
--- Ensure that concurrent profile creation attempts cannot produce duplicate phone records.
+-- Guard against existing duplicates before creating the unique index
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT phone_hash 
+        FROM public.patient_profiles 
+        GROUP BY phone_hash 
+        HAVING COUNT(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'Cannot create unique index: duplicate phone_hash records exist in patient_profiles. Resolve duplicates before applying this migration.';
+    END IF;
+END $$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_patient_profiles_phone_hash_unique 
     ON public.patient_profiles(phone_hash);
 
 -- ------------------------------------------------------------------------------
--- 2. PATIENT PROFILE IMMUTABILITY TRIGGER
+-- 2. ENABLE ROW-LEVEL SECURITY ON HOSPITALS AND HOSPITAL STAFF
 -- ------------------------------------------------------------------------------
--- Prevents authenticated clients from modifying their permanent patient_id,
--- user_id mapping, or verification_status directly via client updates.
+-- Previously omitted in initial schema; must be protected from anonymous harvesting
+ALTER TABLE public.hospitals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.hospital_staff ENABLE ROW LEVEL SECURITY;
+
+-- Hospitals: Verified active hospitals are viewable by authenticated users
+DROP POLICY IF EXISTS "Anyone view verified hospitals" ON public.hospitals;
+CREATE POLICY "Anyone view verified hospitals"
+    ON public.hospitals FOR SELECT
+    USING (verification_status = 'verified' AND is_active = TRUE);
+
+-- Hospital Staff: Only active staff can view their own membership or colleagues in same hospital
+DROP POLICY IF EXISTS "Staff view own hospital membership" ON public.hospital_staff;
+CREATE POLICY "Staff view own hospital membership"
+    ON public.hospital_staff FOR SELECT
+    USING (
+        user_id = auth.uid() OR
+        hospital_id IN (
+            SELECT hospital_id FROM public.hospital_staff 
+            WHERE user_id = auth.uid() AND is_active = TRUE
+        )
+    );
+
+-- ------------------------------------------------------------------------------
+-- 3. PATIENT PROFILE IMMUTABILITY TRIGGER (SECURITY INVOKER)
+-- ------------------------------------------------------------------------------
+-- Prevents authenticated clients from modifying permanent patient_id, user_id,
+-- or elevating verification_status.
+-- Note: Uses SECURITY INVOKER (default) and checks auth.role() derived by Supabase
+-- from the cryptographically verified JWT, preventing SECURITY DEFINER bypass.
 CREATE OR REPLACE FUNCTION public.check_patient_profile_immutability()
 RETURNS TRIGGER AS $$
+DECLARE
+    caller_role text := auth.role();
 BEGIN
     -- Prevent altering permanent patient_id
     IF OLD.patient_id IS DISTINCT FROM NEW.patient_id THEN
@@ -35,17 +77,18 @@ BEGIN
         RAISE EXCEPTION 'Direct re-assignment of patient profile user_id is prohibited. Use authorized recovery workflows.';
     END IF;
 
-    -- Prevent self-elevating verification_status
+    -- Prevent clients from self-elevating verification_status
     IF OLD.verification_status IS DISTINCT FROM NEW.verification_status THEN
-        -- Only service_role can elevate verification_status
-        IF current_user NOT IN ('service_role', 'postgres', 'supabase_admin') THEN
+        -- Only service_role or database superuser can elevate verification_status
+        IF caller_role = 'authenticated' OR caller_role = 'anon' OR 
+           (caller_role IS NULL AND session_user NOT IN ('service_role', 'postgres', 'supabase_admin')) THEN
             RAISE EXCEPTION 'Unauthorized attempt to modify patient verification status.';
         END IF;
     END IF;
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_patient_profile_immutability ON public.patient_profiles;
 CREATE TRIGGER trg_patient_profile_immutability
@@ -54,14 +97,17 @@ CREATE TRIGGER trg_patient_profile_immutability
     EXECUTE FUNCTION public.check_patient_profile_immutability();
 
 -- ------------------------------------------------------------------------------
--- 3. USER ROLE IMMUTABILITY TRIGGER (PREVENT PRIVILEGE ESCALATION)
+-- 4. USER ROLE IMMUTABILITY TRIGGER (PRIVILEGE ESCALATION PREVENTION)
 -- ------------------------------------------------------------------------------
--- Prevents users from updating their own role (e.g. from 'patient' to 'platform_admin').
+-- Prevents ordinary users from escalating their own role in public.users
 CREATE OR REPLACE FUNCTION public.check_user_role_immutability()
 RETURNS TRIGGER AS $$
+DECLARE
+    caller_role text := auth.role();
 BEGIN
     IF OLD.role IS DISTINCT FROM NEW.role THEN
-        IF current_user NOT IN ('service_role', 'postgres', 'supabase_admin') THEN
+        IF caller_role = 'authenticated' OR caller_role = 'anon' OR 
+           (caller_role IS NULL AND session_user NOT IN ('service_role', 'postgres', 'supabase_admin')) THEN
             RAISE EXCEPTION 'Privilege escalation attempt: Users cannot alter their own role.';
         END IF;
     END IF;
@@ -72,7 +118,7 @@ BEGIN
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_user_role_immutability ON public.users;
 CREATE TRIGGER trg_user_role_immutability
@@ -81,10 +127,9 @@ CREATE TRIGGER trg_user_role_immutability
     EXECUTE FUNCTION public.check_user_role_immutability();
 
 -- ------------------------------------------------------------------------------
--- 4. IMMUTABLE AUDIT LOGS TRIGGER
+-- 5. IMMUTABLE AUDIT LOGS TRIGGER
 -- ------------------------------------------------------------------------------
 -- Ensures audit_logs and emergency_access_logs are strictly append-only.
--- Even if an update/delete policy is mistakenly granted, the trigger rejects it.
 CREATE OR REPLACE FUNCTION public.prevent_audit_log_tampering()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -105,10 +150,10 @@ CREATE TRIGGER trg_emergency_logs_immutable
     EXECUTE FUNCTION public.prevent_audit_log_tampering();
 
 -- ------------------------------------------------------------------------------
--- 5. STRENGTHENED ROW-LEVEL SECURITY POLICIES
+-- 6. STRENGTHENED ROW-LEVEL SECURITY POLICIES
 -- ------------------------------------------------------------------------------
 
--- Ensure audit log insertions strictly record the authenticated user as the actor
+-- Ensure audit log insertions strictly record the authenticated user as actor
 DROP POLICY IF EXISTS "Authenticated users insert audit logs" ON public.audit_logs;
 CREATE POLICY "Authenticated users insert audit logs"
     ON public.audit_logs FOR INSERT
@@ -118,3 +163,13 @@ CREATE POLICY "Authenticated users insert audit logs"
 -- Drop direct client INSERT. Recovery requests must be initiated via the secure backend
 -- service to enforce rate limiting, verification challenges, and audit logging.
 DROP POLICY IF EXISTS "Patients insert own recovery requests" ON public.patient_recovery_requests;
+
+-- Patients can only view their own recovery requests
+DROP POLICY IF EXISTS "Patients view own recovery requests" ON public.patient_recovery_requests;
+CREATE POLICY "Patients view own recovery requests"
+    ON public.patient_recovery_requests FOR SELECT
+    USING (
+        patient_profile_id IN (
+            SELECT id FROM public.patient_profiles WHERE user_id = auth.uid()
+        )
+    );
