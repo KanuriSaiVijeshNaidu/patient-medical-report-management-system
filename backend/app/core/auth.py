@@ -23,8 +23,15 @@ def get_current_user(
 ) -> AuthenticatedUser:
     """Validates the incoming Supabase JWT Bearer token and extracts the authenticated user.
 
-    Ensures that caller identity is strictly derived from the verified cryptographic token,
-    never from unverified client-supplied parameters.
+    Enforces cryptographic validation including:
+    - Signature integrity
+    - Expiration time (exp)
+    - Audience claim ('authenticated')
+    - Issuer claim (matching Supabase project URL if configured)
+    - Non-empty subject UUID (sub)
+
+    Ensures patient identity is derived strictly from verified credentials,
+    never trusted from client-supplied body or query parameters.
     """
     if not credentials or not credentials.credentials:
         raise HTTPException(
@@ -33,15 +40,18 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = credentials.credentials
+    token = credentials.credentials.strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Empty or missing authentication token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    # Case 1: Supabase client is configured and can verify or decode token
-    # Supabase tokens can be validated via jwt with SUPABASE_JWT_SECRET if provided,
-    # or by calling supabase auth client.
+    # 1. Verification via live Supabase Auth API if client is configured
     client = get_supabase_client()
     if client:
         try:
-            # Verify token via Supabase Auth API
             user_response = client.auth.get_user(token)
             if user_response and user_response.user:
                 u = user_response.user
@@ -51,36 +61,92 @@ def get_current_user(
                     email=getattr(u, "email", None),
                     role=u.user_metadata.get("role", "patient") if hasattr(u, "user_metadata") and u.user_metadata else "patient",
                 )
-        except Exception:
-            # If network verification fails, attempt direct JWT decode if JWT secret configured
+        except Exception as e:
+            err_str = str(e).lower()
+            if "invalid" in err_str or "expired" in err_str or "bad jwt" in err_str:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired authentication token.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            # If network error or client misconfiguration, fall through to JWT secret verification
             pass
 
-    # Direct JWT verification fallback if secret is known
-    jwt_secret = settings.SUPABASE_JWT_SECRET or settings.JWT_SECRET_KEY
-    if jwt_secret and jwt_secret != "insecure-development-secret-key-replace-in-production":
+    # 2. Cryptographic JWT verification using SUPABASE_JWT_SECRET
+    jwt_secret = settings.SUPABASE_JWT_SECRET
+    if jwt_secret and jwt_secret.strip():
+        expected_issuer = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1" if settings.SUPABASE_URL else None
+        decode_options = {
+            "verify_signature": True,
+            "verify_exp": True,
+            "verify_aud": True,
+            "verify_iss": bool(expected_issuer),
+        }
+
         try:
-            payload = jwt.decode(
-                token,
-                jwt_secret,
-                algorithms=["HS256"],
-                options={"verify_aud": False},
-            )
+            decode_kwargs = {
+                "jwt": token,
+                "key": jwt_secret,
+                "algorithms": ["HS256"],
+                "audience": "authenticated",
+                "options": decode_options,
+            }
+            if expected_issuer:
+                decode_kwargs["issuer"] = expected_issuer
+
+            payload = jwt.decode(**decode_kwargs)
+
             sub = payload.get("sub")
-            if sub:
-                return AuthenticatedUser(
-                    id=UUID(sub),
-                    phone=payload.get("phone"),
-                    email=payload.get("email"),
-                    role=payload.get("role", "patient"),
+            if not sub:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication token is missing subject identity (sub).",
+                    headers={"WWW-Authenticate": "Bearer"},
                 )
+
+            # In Supabase JWTs, role is typically 'authenticated'
+            # Custom roles may be in app_metadata or user_metadata
+            app_meta = payload.get("app_metadata", {})
+            user_meta = payload.get("user_metadata", {})
+            user_role = (
+                app_meta.get("role")
+                or user_meta.get("role")
+                or payload.get("role")
+                or "patient"
+            )
+
+            return AuthenticatedUser(
+                id=UUID(sub),
+                phone=payload.get("phone") or user_meta.get("phone"),
+                email=payload.get("email"),
+                role=user_role,
+            )
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication token has expired. Please sign in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except jwt.InvalidAudienceError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token audience claim. Expected 'authenticated'.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except jwt.InvalidIssuerError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token issuer claim.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         except (jwt.PyJWTError, ValueError):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired authentication token.",
+                detail="Invalid authentication token signature or payload.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    # If Supabase is not configured and no valid secret is present:
+    # 3. If neither Supabase client nor valid JWT secret is configured:
     if not is_db_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

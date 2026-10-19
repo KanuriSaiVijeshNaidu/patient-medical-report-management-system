@@ -44,7 +44,15 @@ export default function AccountRecoveryPage() {
         challenge_emergency_contact_phone: emergencyPhone.trim() || undefined,
       });
 
-      // Step 2: Verify transfer
+      if (initiateRes.status === "pending_institutional_approval") {
+        setSuccessMsg(
+          `Recovery Request Created (Ref: ${initiateRes.recovery_request_id.slice(0, 8)}...). ` +
+          initiateRes.message
+        );
+        return;
+      }
+
+      // If secondary approval exists, complete transfer
       const verifyRes = await verifyRecovery(initiateRes.recovery_request_id);
 
       setSuccessMsg(

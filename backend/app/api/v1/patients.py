@@ -1,11 +1,12 @@
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from app.core.config import settings
 from app.core.database import get_supabase_client, is_db_configured
 from app.core.security import generate_patient_id, hash_phone, mask_phone
 from app.core.auth import get_current_user, AuthenticatedUser
+from app.core.rate_limit import rate_limiter, get_client_ip
 from app.models.schemas import (
     PatientProfileCreate,
     PatientProfileUpdate,
@@ -24,7 +25,9 @@ router = APIRouter()
     response_model=PatientProfileResponse,
     summary="Get authenticated patient profile",
 )
-def get_my_patient_profile(current_user: AuthenticatedUser = Depends(get_current_user)):
+def get_my_patient_profile(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
     """Retrieves the patient profile linked to the authenticated user.
 
     Identity is derived strictly from the verified JWT, preventing access to other patients' records.
@@ -80,12 +83,17 @@ def get_my_patient_profile(current_user: AuthenticatedUser = Depends(get_current
 )
 def create_patient_profile(
     payload: PatientProfileCreate,
+    request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Creates a new patient profile after phone authentication, or idempotently returns
 
     the existing profile. Enforces duplicate prevention and generates a permanent Patient ID.
+    Rate-limited to prevent abuse.
     """
+    client_ip = get_client_ip(request)
+    rate_limiter.check("profile_registration", client_ip, max_requests=10, window_seconds=900)
+
     if not is_db_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -203,7 +211,7 @@ def create_patient_profile(
         "action": "patient_profile_created",
         "entity_type": "patient_profile",
         "entity_id": new_profile["id"],
-        "ip_address": "unknown",
+        "ip_address": client_ip,
         "details": {"patient_id": new_patient_id},
     }).execute()
 
@@ -229,9 +237,16 @@ def create_patient_profile(
 )
 def update_my_patient_profile(
     payload: PatientProfileUpdate,
+    request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
-    """Updates non-identity patient details (blood group, emergency contact)."""
+    """Updates non-identity patient details (blood group, emergency contact).
+
+    Identity fields (patient_id, user_id, verification_status) are strictly immutable.
+    """
+    client_ip = get_client_ip(request)
+    rate_limiter.check("profile_update", client_ip, max_requests=20, window_seconds=900)
+
     if not is_db_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -273,6 +288,18 @@ def update_my_patient_profile(
     )
 
     profile = updated.data[0]
+
+    # Audit log entry
+    client.table("audit_logs").insert({
+        "actor_user_id": str(current_user.id),
+        "actor_role": "patient",
+        "action": "patient_profile_updated",
+        "entity_type": "patient_profile",
+        "entity_id": profile["id"],
+        "ip_address": client_ip,
+        "details": {"updated_fields": list(updates.keys())},
+    }).execute()
+
     return PatientProfileResponse(
         id=UUID(profile["id"]),
         patient_id=profile["patient_id"],
@@ -295,12 +322,22 @@ def update_my_patient_profile(
 )
 def initiate_account_recovery(
     payload: AccountRecoveryInitiateRequest,
+    request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
-    """Initiates account recovery when a patient has changed or lost access to their phone number.
+    """Initiates an account recovery request when a patient loses their phone number.
 
-    Requires identity-challenge verification to prevent hostile profile takeover.
+    Security Audit Controls:
+    1. Server-side sliding window rate limiting prevents brute-forcing Patient IDs and dates of birth.
+    2. Demographic knowledge alone (DOB) is strictly insufficient to authorize an account transfer.
+    3. The request is created in 'pending_institutional_approval' status.
+    4. Since automated secondary KYC/email channels are unconfigured in this phase, it fails safely,
+       directing the patient to in-person hospital desk verification with government photo ID.
     """
+    client_ip = get_client_ip(request)
+    # Rate limit: max 5 recovery attempts per 15 minutes per IP
+    rate_limiter.check("recovery_initiate", client_ip, max_requests=5, window_seconds=900)
+
     if not is_db_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -322,47 +359,66 @@ def initiate_account_recovery(
         .execute()
     )
 
+    # Unified error to prevent user enumeration / timing attacks
+    invalid_challenge_err = HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Invalid recovery request. Verification challenge details do not match or account recovery is restricted.",
+    )
+
     if not target_profile.data:
-        # Avoid user enumeration by giving standard message
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid recovery request. Verification challenge details do not match.",
-        )
+        raise invalid_challenge_err
 
     target = target_profile.data[0]
 
-    # 2. Verify identity challenge: DOB must match strictly
-    if str(target["date_of_birth"]) != str(payload.challenge_date_of_birth):
+    # Prevent recovering an account already owned by caller
+    if str(target["user_id"]) == str(current_user.id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid recovery request. Verification challenge details do not match.",
+            detail="Your current session already owns this Patient ID.",
         )
 
-    # If emergency contact is recorded, check it as secondary challenge
+    # 2. Verify identity challenge: DOB must match strictly
+    if str(target["date_of_birth"]) != str(payload.challenge_date_of_birth):
+        raise invalid_challenge_err
+
+    # If emergency contact is recorded, check secondary challenge
     if target.get("emergency_contact_phone") and payload.challenge_emergency_contact_phone:
         if target["emergency_contact_phone"].strip() != payload.challenge_emergency_contact_phone.strip():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid recovery request. Verification challenge details do not match.",
-            )
+            raise invalid_challenge_err
 
-    # 3. Create recovery request record
+    # 3. Create recovery request in pending_institutional_approval state
     recovery_id = uuid4()
     client.table("patient_recovery_requests").insert({
         "id": str(recovery_id),
         "patient_profile_id": target["id"],
         "old_phone_hash": target["phone_hash"],
         "new_phone_e164": current_user.phone or "pending",
-        "recovery_channel": "identity_challenge",
-        "status": "verified",
+        "recovery_channel": "hospital_desk_required",
+        "status": "pending_institutional_approval",
         "expires_at": (datetime.now(timezone.utc)).isoformat(),
     }).execute()
 
+    # Log recovery initiation attempt in audit trail
+    client.table("audit_logs").insert({
+        "actor_user_id": str(current_user.id),
+        "actor_role": "patient",
+        "action": "patient_recovery_initiated",
+        "entity_type": "patient_recovery_request",
+        "entity_id": str(recovery_id),
+        "ip_address": client_ip,
+        "details": {"target_patient_id": target["patient_id"]},
+    }).execute()
+
+    # Fail safely: Demographic data alone cannot authorize phone transfer.
     return AccountRecoveryInitiateResponse(
         recovery_request_id=recovery_id,
         target_patient_id=target["patient_id"],
-        status="verified",
-        message="Identity challenge verified. Confirm to complete phone number transfer.",
+        status="pending_institutional_approval",
+        message=(
+            "Demographic pre-check confirmed. To prevent unauthorized account takeover, "
+            "phone number re-linking requires in-person hospital desk verification with government photo ID. "
+            "Automated transfer via demographic data alone is disabled."
+        ),
     )
 
 
@@ -373,12 +429,17 @@ def initiate_account_recovery(
 )
 def verify_account_recovery(
     payload: AccountRecoveryVerifyRequest,
+    request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
-    """Completes account recovery by linking the existing medical profile to the
+    """Completes account recovery only when an authorized secondary verification channel
 
-    caller's newly authenticated phone credentials, preventing duplicate profile creation.
+    (e.g., in-person hospital staff approval or verified KYC) has validated the transfer.
+    Demographic knowledge alone is rejected.
     """
+    client_ip = get_client_ip(request)
+    rate_limiter.check("recovery_verify", client_ip, max_requests=5, window_seconds=900)
+
     if not is_db_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -400,13 +461,25 @@ def verify_account_recovery(
         .execute()
     )
 
-    if not recovery_req.data or recovery_req.data[0]["status"] != "verified":
+    if not recovery_req.data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired recovery request.",
         )
 
     req = recovery_req.data[0]
+
+    # Security check: Must be formally approved by institutional staff or verified KYC
+    if req["status"] != "approved_by_staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Account recovery cannot be completed. Demographic knowledge alone is insufficient to authorize "
+                "phone number transfer. An in-person hospital desk verification or approved administrative authorization "
+                "is required to approve this request before profile transfer."
+            ),
+        )
+
     patient_profile_id = req["patient_profile_id"]
 
     # 2. Update patient profile user_id to current_user.id and update phone_hash
@@ -429,7 +502,7 @@ def verify_account_recovery(
         "action": "patient_account_recovered",
         "entity_type": "patient_profile",
         "entity_id": patient_profile_id,
-        "ip_address": "unknown",
+        "ip_address": client_ip,
         "details": {"recovery_request_id": str(payload.recovery_request_id)},
     }).execute()
 

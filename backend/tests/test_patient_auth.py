@@ -1,13 +1,22 @@
-from datetime import date
+import time
+from datetime import date, datetime, timezone, timedelta
 from uuid import uuid4
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 from app.core.security import generate_patient_id, normalize_phone, hash_phone, mask_phone
 from app.core.auth import get_current_user, AuthenticatedUser
 from app.core.config import settings
+from app.core.rate_limit import rate_limiter
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limits():
+    """Reset rate limiter state before each test."""
+    rate_limiter.reset_for_tests()
 
 
 # -----------------------------------------------------------------------------
@@ -59,7 +68,7 @@ def test_phone_masking():
 
 
 # -----------------------------------------------------------------------------
-# 2. Authentication & Authorization Guard Tests
+# 2. Token Cryptographic Claims & Auth Guard Tests
 # -----------------------------------------------------------------------------
 def test_unauthenticated_access_denied():
     """Attempting to access /api/v1/patients/me without Bearer token must return 401."""
@@ -68,20 +77,78 @@ def test_unauthenticated_access_denied():
     assert "detail" in response.json()
 
 
-def test_missing_credentials_provides_clear_instructions():
-    """When DB is unconfigured and invalid token is provided, returns clear setup error or 401."""
+def test_malformed_token_rejected():
+    """Malformed token string must return 401."""
     response = client.get(
         "/api/v1/patients/me",
-        headers={"Authorization": "Bearer invalid-dummy-token"},
+        headers={"Authorization": "Bearer not-a-valid-jwt-token"},
     )
-    # Either 401 invalid token or 503 unconfigured service, never a 500 crash or false success
     assert response.status_code in [401, 503]
-    detail = response.json().get("detail", "")
-    assert len(detail) > 0
+
+
+def test_expired_token_rejected(monkeypatch):
+    """JWT with past expiration timestamp (exp) must be rejected with 401."""
+    test_secret = "super-secret-test-key-32-characters-minimum!"
+    monkeypatch.setattr(settings, "SUPABASE_JWT_SECRET", test_secret)
+    monkeypatch.setattr("app.core.auth.get_supabase_client", lambda: None)
+
+    expired_payload = {
+        "sub": str(uuid4()),
+        "aud": "authenticated",
+        "role": "authenticated",
+        "exp": int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()),
+    }
+    expired_token = jwt.encode(expired_payload, test_secret, algorithm="HS256")
+
+    response = client.get(
+        "/api/v1/patients/me",
+        headers={"Authorization": f"Bearer {expired_token}"},
+    )
+    assert response.status_code == 401
+    assert "expired" in response.json().get("detail", "").lower()
+
+
+def test_invalid_audience_token_rejected(monkeypatch):
+    """JWT with invalid audience claim (e.g. 'wrong_audience') must be rejected with 401."""
+    test_secret = "super-secret-test-key-32-characters-minimum!"
+    monkeypatch.setattr(settings, "SUPABASE_JWT_SECRET", test_secret)
+    monkeypatch.setattr("app.core.auth.get_supabase_client", lambda: None)
+
+    invalid_aud_payload = {
+        "sub": str(uuid4()),
+        "aud": "wrong_audience",
+        "role": "authenticated",
+        "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+    }
+    bad_token = jwt.encode(invalid_aud_payload, test_secret, algorithm="HS256")
+
+    response = client.get(
+        "/api/v1/patients/me",
+        headers={"Authorization": f"Bearer {bad_token}"},
+    )
+    assert response.status_code == 401
+    assert "audience" in response.json().get("detail", "").lower()
+
+
+def test_missing_environment_configuration_fails_safely(monkeypatch):
+    """When DB credentials are unconfigured and token verification cannot run, fails with 503."""
+    monkeypatch.setattr(settings, "SUPABASE_URL", "")
+    monkeypatch.setattr(settings, "SUPABASE_KEY", "")
+    monkeypatch.setattr(settings, "SUPABASE_SERVICE_ROLE_KEY", "")
+    monkeypatch.setattr(settings, "SUPABASE_JWT_SECRET", "")
+    monkeypatch.setattr("app.core.auth.get_supabase_client", lambda: None)
+    monkeypatch.setattr("app.core.auth.is_db_configured", lambda: False)
+
+    response = client.get(
+        "/api/v1/patients/me",
+        headers={"Authorization": "Bearer some-token"},
+    )
+    assert response.status_code == 503
+    assert "unconfigured" in response.json()["detail"].lower()
 
 
 # -----------------------------------------------------------------------------
-# 3. Duplicate Prevention & Recovery Tests (Mocked Authenticated Session)
+# 3. Database Mocking & Multi-Tenant Isolation Tests
 # -----------------------------------------------------------------------------
 class MockSupabaseTable:
     def __init__(self, data=None):
@@ -141,13 +208,62 @@ class MockSupabaseClient:
         return self.tables[table_name]
 
 
+def test_cross_patient_isolation(monkeypatch):
+    """Patient A cannot retrieve or modify Patient B's profile.
+
+    Endpoint strictly fetches records where user_id == current_user.id.
+    """
+    mock_db = MockSupabaseClient()
+    patient_a_id = uuid4()
+    patient_b_id = uuid4()
+
+    mock_db.table("patient_profiles").data.append({
+        "id": str(uuid4()),
+        "patient_id": "MED-2026-AAA111",
+        "user_id": str(patient_a_id),
+        "full_name": "Patient Alpha",
+        "date_of_birth": "1990-01-01",
+        "gender": "female",
+        "verification_status": "phone_verified",
+        "created_at": "2026-10-19T12:00:00Z",
+    })
+
+    mock_db.table("patient_profiles").data.append({
+        "id": str(uuid4()),
+        "patient_id": "MED-2026-BBB222",
+        "user_id": str(patient_b_id),
+        "full_name": "Patient Bravo",
+        "date_of_birth": "1988-08-08",
+        "gender": "male",
+        "verification_status": "phone_verified",
+        "created_at": "2026-10-19T12:00:00Z",
+    })
+
+    monkeypatch.setattr("app.api.v1.patients.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.patients.get_supabase_client", lambda: mock_db)
+
+    # Session is authenticated as Patient A
+    mock_user_a = AuthenticatedUser(id=patient_a_id, phone="+919876543210")
+    app.dependency_overrides[get_current_user] = lambda: mock_user_a
+
+    try:
+        response = client.get("/api/v1/patients/me")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["patient_id"] == "MED-2026-AAA111"
+        assert data["full_name"] == "Patient Alpha"
+        # Must never return Patient B's info
+        assert data["patient_id"] != "MED-2026-BBB222"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_idempotent_registration_prevents_duplicate_profile(monkeypatch):
     """If authenticated user already has a profile, create_patient_profile returns it idempotently."""
     mock_db = MockSupabaseClient()
     user_id = uuid4()
     patient_id = "MED-2026-TEST01"
 
-    # Seed existing profile for this user
     mock_db.table("patient_profiles").data.append({
         "id": str(uuid4()),
         "patient_id": patient_id,
@@ -162,7 +278,6 @@ def test_idempotent_registration_prevents_duplicate_profile(monkeypatch):
     monkeypatch.setattr("app.api.v1.patients.is_db_configured", lambda: True)
     monkeypatch.setattr("app.api.v1.patients.get_supabase_client", lambda: mock_db)
 
-    # Override get_current_user dependency
     mock_user = AuthenticatedUser(id=user_id, phone="+919876543210")
     app.dependency_overrides[get_current_user] = lambda: mock_user
 
@@ -176,7 +291,6 @@ def test_idempotent_registration_prevents_duplicate_profile(monkeypatch):
         assert response.status_code == 201
         data = response.json()
         assert data["patient_id"] == patient_id
-        # Verify no second record was created in the table
         assert len(mock_db.table("patient_profiles").data) == 1
     finally:
         app.dependency_overrides.clear()
@@ -189,7 +303,6 @@ def test_registration_detects_duplicate_phone_number(monkeypatch):
     new_user_id = uuid4()
     shared_phone = "+919876543210"
 
-    # Seed profile with existing phone hash under another user
     mock_db.table("patient_profiles").data.append({
         "id": str(uuid4()),
         "patient_id": "MED-2026-EXIST1",
@@ -205,7 +318,6 @@ def test_registration_detects_duplicate_phone_number(monkeypatch):
     monkeypatch.setattr("app.api.v1.patients.is_db_configured", lambda: True)
     monkeypatch.setattr("app.api.v1.patients.get_supabase_client", lambda: mock_db)
 
-    # New user with same phone attempts to register
     mock_user = AuthenticatedUser(id=new_user_id, phone=shared_phone)
     app.dependency_overrides[get_current_user] = lambda: mock_user
 
@@ -222,14 +334,66 @@ def test_registration_detects_duplicate_phone_number(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_account_recovery_rejects_mismatched_challenge(monkeypatch):
-    """Account recovery rejects attempts to take over a Patient ID with incorrect challenge info."""
+def test_unauthorized_profile_fields_immutable(monkeypatch):
+    """Updating profile only allows blood_group and emergency_contact_phone.
+
+    Immutable identity fields (patient_id, verification_status) are ignored or rejected.
+    """
+    mock_db = MockSupabaseClient()
+    user_id = uuid4()
+    original_pid = "MED-2026-IMMUT1"
+
+    mock_db.table("patient_profiles").data.append({
+        "id": str(uuid4()),
+        "patient_id": original_pid,
+        "user_id": str(user_id),
+        "full_name": "Original Name",
+        "date_of_birth": "1990-01-01",
+        "gender": "male",
+        "blood_group": "O+",
+        "verification_status": "phone_verified",
+        "created_at": "2026-10-19T12:00:00Z",
+    })
+
+    monkeypatch.setattr("app.api.v1.patients.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.patients.get_supabase_client", lambda: mock_db)
+
+    mock_user = AuthenticatedUser(id=user_id, phone="+919876543210")
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+
+    try:
+        # User tries to change blood group and attempts to smuggle patient_id modification
+        payload = {
+            "blood_group": "AB+",
+            "emergency_contact_phone": "+919999900000",
+            "patient_id": "MED-2026-HACKED",
+            "verification_status": "kyc_verified",
+        }
+        response = client.patch("/api/v1/patients/me", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        # Blood group updated
+        assert data["blood_group"] == "AB+"
+        # Permanent ID remained untouched
+        assert data["patient_id"] == original_pid
+        assert data["verification_status"] == "phone_verified"
+    finally:
+        app.dependency_overrides.clear()
+
+
+# -----------------------------------------------------------------------------
+# 4. Account Recovery Security & Takeover Prevention Tests
+# -----------------------------------------------------------------------------
+def test_account_recovery_demographic_alone_fails_safely(monkeypatch):
+    """Account recovery with demographic knowledge alone must NOT authorize transfer.
+
+    It creates a pending request requiring institutional/hospital desk verification.
+    """
     mock_db = MockSupabaseClient()
     owner_user_id = uuid4()
-    attacker_user_id = uuid4()
-    target_pid = "MED-2026-VICTIM1"
+    recovering_user_id = uuid4()
+    target_pid = "MED-2026-TARGET1"
 
-    # Seed target profile
     mock_db.table("patient_profiles").data.append({
         "id": str(uuid4()),
         "patient_id": target_pid,
@@ -238,7 +402,6 @@ def test_account_recovery_rejects_mismatched_challenge(monkeypatch):
         "full_name": "Original Patient",
         "date_of_birth": "1980-08-20",
         "gender": "female",
-        "emergency_contact_phone": "+918888888888",
         "verification_status": "phone_verified",
         "created_at": "2026-10-19T12:00:00Z",
     })
@@ -246,17 +409,81 @@ def test_account_recovery_rejects_mismatched_challenge(monkeypatch):
     monkeypatch.setattr("app.api.v1.patients.is_db_configured", lambda: True)
     monkeypatch.setattr("app.api.v1.patients.get_supabase_client", lambda: mock_db)
 
-    # Attacker tries to recover with wrong date of birth
-    mock_user = AuthenticatedUser(id=attacker_user_id, phone="+917777777777")
+    mock_user = AuthenticatedUser(id=recovering_user_id, phone="+917777777777")
     app.dependency_overrides[get_current_user] = lambda: mock_user
 
     try:
         payload = {
             "target_patient_id": target_pid,
-            "challenge_date_of_birth": "1995-01-01",  # Wrong DOB!
+            "challenge_date_of_birth": "1980-08-20",  # Correct DOB
         }
         response = client.post("/api/v1/patients/recovery/initiate", json=payload)
-        assert response.status_code == 400
-        assert "do not match" in response.json()["detail"]
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "pending_institutional_approval"
+        assert "in-person hospital desk verification" in data["message"].lower()
+
+        # Verify profile ownership was NOT changed
+        target_in_db = mock_db.table("patient_profiles").data[0]
+        assert target_in_db["user_id"] == str(owner_user_id)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_account_recovery_unapproved_verify_forbidden(monkeypatch):
+    """Calling /recovery/verify without staff institutional approval must return 403 Forbidden."""
+    mock_db = MockSupabaseClient()
+    owner_user_id = uuid4()
+    attacker_user_id = uuid4()
+    target_profile_id = str(uuid4())
+    recovery_req_id = str(uuid4())
+
+    mock_db.table("patient_recovery_requests").data.append({
+        "id": recovery_req_id,
+        "patient_profile_id": target_profile_id,
+        "status": "pending_institutional_approval",  # Not approved by staff!
+    })
+
+    monkeypatch.setattr("app.api.v1.patients.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.patients.get_supabase_client", lambda: mock_db)
+
+    mock_user = AuthenticatedUser(id=attacker_user_id, phone="+917777777777")
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+
+    try:
+        response = client.post(
+            "/api/v1/patients/recovery/verify",
+            json={"recovery_request_id": recovery_req_id},
+        )
+        assert response.status_code == 403
+        assert "insufficient" in response.json()["detail"].lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_recovery_rate_limiting_prevents_brute_force(monkeypatch):
+    """Exceeding rate limit on account recovery initiate must return 429 Too Many Requests."""
+    mock_db = MockSupabaseClient()
+    monkeypatch.setattr("app.api.v1.patients.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.patients.get_supabase_client", lambda: mock_db)
+
+    mock_user = AuthenticatedUser(id=uuid4(), phone="+917777777777")
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+
+    try:
+        payload = {
+            "target_patient_id": "MED-2026-FAKE01",
+            "challenge_date_of_birth": "1990-01-01",
+        }
+
+        # Send 5 attempts (allowed limit)
+        for _ in range(5):
+            client.post("/api/v1/patients/recovery/initiate", json=payload)
+
+        # 6th attempt must be rejected with 429 Too Many Requests
+        response = client.post("/api/v1/patients/recovery/initiate", json=payload)
+        assert response.status_code == 429
+        assert "rate limit exceeded" in response.json()["detail"].lower()
+        assert "Retry-After" in response.headers
     finally:
         app.dependency_overrides.clear()
