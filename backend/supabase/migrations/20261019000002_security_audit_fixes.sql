@@ -43,16 +43,26 @@ CREATE POLICY "Anyone view verified hospitals"
     ON public.hospitals FOR SELECT
     USING (verification_status = 'verified' AND is_active = TRUE);
 
+-- Security definer helper to prevent infinite recursion in hospital_staff RLS policy
+CREATE OR REPLACE FUNCTION public.get_current_user_hospital_ids()
+RETURNS SETOF uuid
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT hospital_id 
+    FROM public.hospital_staff 
+    WHERE user_id = auth.uid() AND is_active = TRUE;
+$$;
+
 -- Hospital Staff: Only active staff can view their own membership or colleagues in same hospital
 DROP POLICY IF EXISTS "Staff view own hospital membership" ON public.hospital_staff;
 CREATE POLICY "Staff view own hospital membership"
     ON public.hospital_staff FOR SELECT
     USING (
         user_id = auth.uid() OR
-        hospital_id IN (
-            SELECT hospital_id FROM public.hospital_staff 
-            WHERE user_id = auth.uid() AND is_active = TRUE
-        )
+        hospital_id IN (SELECT public.get_current_user_hospital_ids())
     );
 
 -- ------------------------------------------------------------------------------

@@ -93,9 +93,7 @@ INSERT INTO public.patient_profiles (
     encode(sha256('+919111111111'::bytea), 'hex'),
     'phone_verified'
 );
-RAISE NOTICE 'TEST 2A PASSED: Patient A successfully created own profile.';
-
--- Patient A attempts to insert a profile claiming user_id of Patient B -> Must Fail RLS
+DO $$ BEGIN RAISE NOTICE 'TEST 2A PASSED: Patient A successfully created own profile.'; END $$;
 DO $$
 BEGIN
     INSERT INTO public.patient_profiles (
@@ -284,8 +282,12 @@ BEGIN
     RAISE NOTICE 'TEST 7 PASSED: Authorized service_role operations succeed as intended.';
 END $$;
 
+DO $$ 
+BEGIN
+    RAISE NOTICE '===================================================================';
+    RAISE NOTICE 'ALL 7 DATABASE INTEGRATION SECURITY TESTS PASSED SUCCESSFULLY!';
+    RAISE NOTICE '===================================================================';
+END $$;
+
 -- Rollback entire test transaction to keep database completely clean
 ROLLBACK;
-RAISE NOTICE '===================================================================';
-RAISE NOTICE 'ALL 7 DATABASE INTEGRATION SECURITY TESTS PASSED SUCCESSFULLY!';
-RAISE NOTICE '===================================================================';
