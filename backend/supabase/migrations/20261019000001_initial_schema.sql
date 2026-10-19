@@ -196,16 +196,35 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON public.audit_logs(entity_typ
 -- ------------------------------------------------------------------------------
 
 -- Enable RLS on core tables
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.patient_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.medical_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.record_access_grants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.emergency_access_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.patient_recovery_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 
--- Patient Profiles: Patients can select and update their own profile
+-- Users: Authenticated users can view and update their own record
+CREATE POLICY "Users view own record"
+    ON public.users FOR SELECT
+    USING (auth.uid() = id);
+
+CREATE POLICY "Users insert own record"
+    ON public.users FOR INSERT
+    WITH CHECK (auth.uid() = id);
+
+CREATE POLICY "Users update own record"
+    ON public.users FOR UPDATE
+    USING (auth.uid() = id);
+
+-- Patient Profiles: Patients can select, insert, and update their own profile
 CREATE POLICY "Patients view own profile"
     ON public.patient_profiles FOR SELECT
     USING (auth.uid() = user_id);
+
+CREATE POLICY "Patients insert own profile"
+    ON public.patient_profiles FOR INSERT
+    WITH CHECK (auth.uid() = user_id);
 
 CREATE POLICY "Patients update own profile"
     ON public.patient_profiles FOR UPDATE
@@ -235,6 +254,23 @@ CREATE POLICY "Patients manage own access grants"
     ON public.record_access_grants FOR ALL
     USING (
         patient_id IN (
+            SELECT id FROM public.patient_profiles WHERE user_id = auth.uid()
+        )
+    );
+
+-- Patient Recovery Requests: Patients can view and initiate recovery requests
+CREATE POLICY "Patients view own recovery requests"
+    ON public.patient_recovery_requests FOR SELECT
+    USING (
+        patient_profile_id IN (
+            SELECT id FROM public.patient_profiles WHERE user_id = auth.uid()
+        )
+    );
+
+CREATE POLICY "Patients insert own recovery requests"
+    ON public.patient_recovery_requests FOR INSERT
+    WITH CHECK (
+        patient_profile_id IN (
             SELECT id FROM public.patient_profiles WHERE user_id = auth.uid()
         )
     );

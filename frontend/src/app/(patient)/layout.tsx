@@ -29,6 +29,12 @@ export default function PatientLayout({
               Dashboard
             </Link>
             <Link
+              href="/patient/login"
+              className="px-3 py-1.5 text-slate-700 hover:text-blue-600 rounded-md transition"
+            >
+              Sign In
+            </Link>
+            <Link
               href="/patient/reports"
               className="px-3 py-1.5 text-slate-700 hover:text-blue-600 rounded-md transition"
             >

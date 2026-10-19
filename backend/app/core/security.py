@@ -1,5 +1,49 @@
 import hashlib
 import secrets
+from datetime import datetime
+from typing import Optional
+
+# Ambiguity-free alphanumeric alphabet (excluding 0, O, 1, I to prevent read errors)
+PATIENT_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+
+
+def generate_patient_id(year: Optional[int] = None) -> str:
+    """Generates a permanent, collision-resistant, human-readable Patient ID.
+
+    Format: MED-YYYY-XXXXXX (e.g. MED-2026-8K4F29)
+    """
+    current_year = year or datetime.now().year
+    random_chars = "".join(secrets.choice(PATIENT_ID_ALPHABET) for _ in range(6))
+    return f"MED-{current_year}-{random_chars}"
+
+
+def normalize_phone(phone: str) -> str:
+    """Normalizes phone number to E.164-compatible clean representation."""
+    cleaned = "".join(c for c in phone.strip() if c.isdigit() or c == "+")
+    if not cleaned.startswith("+"):
+        # Assume Indian country code +91 if 10 digits provided without country code
+        if len(cleaned) == 10:
+            cleaned = "+91" + cleaned
+        else:
+            cleaned = "+" + cleaned
+    return cleaned
+
+
+def hash_phone(phone: str) -> str:
+    """Generates a consistent SHA-256 hash of normalized phone number for deduplication checks."""
+    normalized = normalize_phone(phone)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def mask_phone(phone: str) -> str:
+    """Masks phone number for secure display, preserving country code and last 4 digits."""
+    norm = normalize_phone(phone)
+    if len(norm) > 6:
+        prefix = norm[:3]
+        suffix = norm[-4:]
+        masked_middle = "*" * (len(norm) - 7)
+        return f"{prefix} {masked_middle} {suffix}"
+    return norm
 
 
 def hash_token(token: str) -> str:
@@ -10,9 +54,3 @@ def hash_token(token: str) -> str:
 def generate_share_token() -> str:
     """Generates a high-entropy URL-safe share token."""
     return secrets.token_urlsafe(32)
-
-
-def hash_phone(phone_e164: str) -> str:
-    """Generates a consistent SHA-256 hash of normalized phone number for deduplication checks."""
-    normalized = phone_e164.strip()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()

@@ -16,10 +16,20 @@ def get_supabase_client() -> Optional[Client]:
     if _supabase_client is not None:
         return _supabase_client
 
-    if settings.SUPABASE_URL and settings.SUPABASE_KEY:
+    if settings.SUPABASE_URL and settings.active_supabase_key:
         try:
-            _supabase_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+            _supabase_client = create_client(
+                settings.SUPABASE_URL,
+                settings.active_supabase_key
+            )
             return _supabase_client
-        except Exception:
+        except Exception as e:
+            # Safe fallback if credentials invalid
             return None
     return None
+
+
+def is_db_configured() -> bool:
+    """Checks whether database credentials are provided."""
+    return bool(settings.SUPABASE_URL and settings.active_supabase_key)
+
