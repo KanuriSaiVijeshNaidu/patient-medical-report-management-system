@@ -568,3 +568,32 @@ def test_sql_migrations_structural_integrity_and_rls():
     assert "check_patient_profile_immutability()\nRETURNS TRIGGER AS $$" in mig2_sql or "LANGUAGE plpgsql;" in mig2_sql
     assert "auth.role()" in mig2_sql, "Trigger must inspect Supabase auth.role()"
 
+
+def test_sql_integration_test_suite_coverage():
+    """Verifies that the repeatable SQL integration test suite exists and covers all 7 security checks."""
+    import os
+
+    tests_dir = os.path.join(os.path.dirname(__file__), "..", "supabase", "tests")
+    setup_path = os.path.join(tests_dir, "setup_test_environment.sql")
+    test_suite_path = os.path.join(tests_dir, "test_rls_and_security.sql")
+
+    assert os.path.exists(setup_path), "setup_test_environment.sql must exist"
+    assert os.path.exists(test_suite_path), "test_rls_and_security.sql must exist"
+
+    with open(test_suite_path, "r", encoding="utf-8") as f:
+        test_sql = f.read()
+
+    expected_checks = [
+        "TEST 1: Anonymous Access Denial",
+        "TEST 2: Patient Profile Creation & Tenant Isolation",
+        "TEST 3: Cross-Patient Data Reading & Modification Denial",
+        "TEST 4: Immutability Triggers",
+        "TEST 5: Database-Level Unique Constraint",
+        "TEST 6: Audit Log Tamper-Proofing",
+        "TEST 7: Service Role Legitimacy Check",
+    ]
+
+    for check in expected_checks:
+        assert check in test_sql, f"Missing security check in SQL test suite: {check}"
+
+
