@@ -11,11 +11,14 @@ Architecture & Concurrency Considerations:
   (via redis.asyncio or redis-py sliding window sorted set ZADD/ZREMRANGEBYSCORE)
   or edge-layer rate limiting (Cloudflare WAF / AWS WAF / API Gateway).
 """
+import logging
 import time
 from collections import defaultdict
 from threading import Lock
 from typing import Dict, List, Tuple, Optional
 from fastapi import HTTPException, Request, status
+
+logger = logging.getLogger("security.rate_limit")
 
 
 class SlidingWindowRateLimiter:
@@ -49,6 +52,17 @@ class SlidingWindowRateLimiter:
             if len(self._requests[bucket_key]) >= max_requests:
                 oldest = self._requests[bucket_key][0]
                 retry_after = int(window_seconds - (now - oldest)) + 1
+                logger.warning(
+                    "Rate limit exceeded: key=%s identifier=%s count=%d max=%d retry_after=%ds",
+                    key, identifier, len(self._requests[bucket_key]), max_requests, retry_after,
+                    extra={
+                        "event": "rate_limit_exceeded",
+                        "rate_limit_key": key,
+                        "client_identifier": identifier,
+                        "retry_after_seconds": retry_after,
+                        "outcome": "denied",
+                    }
+                )
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail=f"Rate limit exceeded. Too many requests for {key}. Try again in {retry_after} seconds.",

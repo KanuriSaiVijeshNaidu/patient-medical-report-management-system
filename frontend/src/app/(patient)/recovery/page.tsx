@@ -88,7 +88,7 @@ export default function AccountRecoveryPage() {
           Account Recovery
         </h1>
         <p className="text-sm text-slate-600">
-          Changed or lost access to your registered phone number? Re-link your existing records without creating a duplicate profile.
+          Changed or lost access to your registered email or account? Re-link your existing records without creating a duplicate profile.
         </p>
       </div>
 

@@ -32,10 +32,22 @@ yarn-error.log*
 pnpm-debug.log*
 *.log
 
-# IDE and OS files
+# Medical documents, scans, and local test fixtures
+paitent_details/
+*.pdf
+test_reports/
+*.pem
+*.key
+*.dump
+*.db
+*.sqlite# IDE and OS files
 .vscode/
 .idea/
 *.swp
 *.swo
 .DS_Store
 Thumbs.db
+
+# Local medical documents and test reports
+paitent_details/
+*.pdf

@@ -79,21 +79,28 @@ SET ROLE authenticated;
 SET request.jwt.claim.role = 'authenticated';
 SET request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
 
--- Patient A inserts own profile -> Must Succeed
-INSERT INTO public.patient_profiles (
-    id, patient_id, user_id, full_name, date_of_birth, gender, blood_group, phone_hash, verification_status
-) VALUES (
-    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-    'MED-2026-AAAAAA',
-    '11111111-1111-1111-1111-111111111111',
-    'Patient Alpha',
-    '1990-01-01',
-    'female',
-    'O+',
-    encode(sha256('+919111111111'::bytea), 'hex'),
-    'phone_verified'
-);
-DO $$ BEGIN RAISE NOTICE 'TEST 2A PASSED: Patient A successfully created own profile.'; END $$;
+-- Direct client INSERT into patient_profiles must be BLOCKED by RLS policy
+DO $$
+BEGIN
+    INSERT INTO public.patient_profiles (
+        id, patient_id, user_id, full_name, date_of_birth, gender, blood_group, phone_hash, verification_status
+    ) VALUES (
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        'MED-2026-AAAAAA',
+        '11111111-1111-1111-1111-111111111111',
+        'Patient Alpha',
+        '1990-01-01',
+        'female',
+        'O+',
+        encode(sha256('+919111111111'::bytea), 'hex'),
+        'phone_verified'
+    );
+    RAISE EXCEPTION 'TEST 2A FAILED: Direct client INSERT into patient_profiles was allowed!';
+EXCEPTION
+    WHEN insufficient_privilege OR check_violation THEN
+        RAISE NOTICE 'TEST 2A PASSED: Direct client INSERT into patient_profiles successfully blocked by RLS.';
+END $$;
+
 DO $$
 BEGIN
     INSERT INTO public.patient_profiles (
@@ -118,12 +125,22 @@ END $$;
 -- ------------------------------------------------------------------------------
 -- TEST 3: Cross-Patient Data Reading & Modification Denial
 -- ------------------------------------------------------------------------------
--- Seed Patient B's profile using service_role
+-- Seed Patient A and Patient B profiles using authorized service_role
 SET ROLE service_role;
 SET request.jwt.claim.role = 'service_role';
 INSERT INTO public.patient_profiles (
     id, patient_id, user_id, full_name, date_of_birth, gender, blood_group, phone_hash, verification_status
 ) VALUES (
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    'MED-2026-AAAAAA',
+    '11111111-1111-1111-1111-111111111111',
+    'Patient Alpha',
+    '1990-01-01',
+    'female',
+    'O+',
+    encode(sha256('+919111111111'::bytea), 'hex'),
+    'phone_verified'
+), (
     'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
     'MED-2026-BBBBBB',
     '22222222-2222-2222-2222-222222222222',
@@ -210,7 +227,9 @@ END $$;
 -- ------------------------------------------------------------------------------
 -- TEST 5: Database-Level Unique Constraint (Deduplication)
 -- ------------------------------------------------------------------------------
--- Attempt to insert a profile with the same phone_hash under another ID -> Must fail
+-- Attempt to insert a profile with the same phone_hash under another ID using service_role -> Must fail
+SET ROLE service_role;
+SET request.jwt.claim.role = 'service_role';
 DO $$
 BEGIN
     INSERT INTO public.patient_profiles (
@@ -235,9 +254,32 @@ END $$;
 -- ------------------------------------------------------------------------------
 -- TEST 6: Audit Log Tamper-Proofing (Append-Only Enforcement)
 -- ------------------------------------------------------------------------------
--- Insert a test audit record as Patient A
+-- Switch to Patient A
+SET ROLE authenticated;
+SET request.jwt.claim.role = 'authenticated';
+SET request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+
+-- Assert authenticated user cannot directly INSERT into audit_logs (revoked write privilege)
+DO $$
+BEGIN
+    INSERT INTO public.audit_logs (id, actor_user_id, actor_role, action, entity_type, entity_id, ip_address)
+    VALUES ('99999999-9999-9999-9999-999999999999', '11111111-1111-1111-1111-111111111111', 'patient', 'forged_action', 'patient_profile', 'test_id', '127.0.0.1');
+    RAISE EXCEPTION 'TEST 6 FAILED: Client was allowed to directly insert an audit log record!';
+EXCEPTION
+    WHEN insufficient_privilege THEN
+        RAISE NOTICE 'TEST 6 PASSED: Direct client INSERT into audit_logs blocked by revoked privileges.';
+END $$;
+
+-- Insert an authorized audit record via service_role
+SET ROLE service_role;
+SET request.jwt.claim.role = 'service_role';
 INSERT INTO public.audit_logs (id, actor_user_id, actor_role, action, entity_type, entity_id, ip_address)
 VALUES ('99999999-9999-9999-9999-999999999999', '11111111-1111-1111-1111-111111111111', 'patient', 'test_action', 'patient_profile', 'test_id', '127.0.0.1');
+
+-- Switch back to Patient A
+SET ROLE authenticated;
+SET request.jwt.claim.role = 'authenticated';
+SET request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
 
 -- Attempt to UPDATE audit_logs -> Trigger must raise exception
 DO $$
