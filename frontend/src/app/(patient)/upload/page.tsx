@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -13,17 +13,21 @@ import {
   X,
   FileCheck,
   ShieldCheck,
+  Calendar,
+  Check,
+  Sparkles,
+  Lock,
 } from "lucide-react";
 import { uploadMedicalReport } from "@/lib/api";
 
 const CATEGORIES = [
-  { value: "blood_test", label: "Blood Test" },
-  { value: "xray", label: "X-Ray Scan" },
+  { value: "blood_test", label: "Lab Report / Blood Test" },
+  { value: "xray", label: "Radiology / X-Ray Scan" },
   { value: "ct_scan", label: "CT Scan" },
   { value: "mri", label: "MRI Scan" },
   { value: "prescription", label: "Prescription" },
   { value: "discharge_summary", label: "Discharge Summary" },
-  { value: "other", label: "Other Diagnostic / Lab" },
+  { value: "other", label: "Other Diagnostic / Clinical" },
 ];
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -42,12 +46,13 @@ export default function UploadReportPage() {
 
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const todayStr = new Date().toISOString().split("T")[0];
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (typeof window !== "undefined") {
       const token = localStorage.getItem("med_report_token");
       if (!token || !token.trim()) {
@@ -58,6 +63,7 @@ export default function UploadReportPage() {
 
   const handleFileValidation = (file: File) => {
     setErrorMsg(null);
+    setSuccessMsg(null);
 
     // Validate extension
     if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -84,6 +90,15 @@ export default function UploadReportPage() {
     }
 
     setSelectedFile(file);
+    // Auto-fill title if empty
+    if (!title.trim()) {
+      const cleanName = file.name
+        .replace(/\.[^/.]+$/, "")
+        .replace(/[_-]+/g, " ")
+        .replace(/\b\w/g, (l) => l.toUpperCase());
+      setTitle(cleanName);
+    }
+    setUploadProgress(100);
     return true;
   };
 
@@ -155,237 +170,258 @@ export default function UploadReportPage() {
       });
 
       setSuccessMsg(
-        `Report "${created.title}" (${created.report_id}) uploaded securely. Redirecting to reports library...`
+        `Report "${created.title}" successfully uploaded and encrypted. Assigned ID: ${created.report_id}.`
       );
 
+      // Reset form
+      setSelectedFile(null);
+      setTitle("");
+      setDescription("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      // Smooth navigation after 1.5s
       setTimeout(() => {
-        router.push("/reports");
+        router.push("/patient/reports");
       }, 1500);
     } catch (err: any) {
-      if (
-        err.message?.includes("Authentication required") ||
-        err.message?.includes("401") ||
-        err.message?.includes("sign in")
-      ) {
-        router.push("/patient/login");
-        return;
-      }
       setErrorMsg(err.message || "Failed to upload medical report.");
     } finally {
       setUploading(false);
     }
   };
 
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024 * 1024) {
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
-      {/* Header Breadcrumb */}
-      <div className="flex items-center justify-between border-b border-slate-200 pb-4">
-        <div>
-          <Link
-            href="/dashboard"
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-blue-600 transition mb-2"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" /> Back to Dashboard
-          </Link>
-          <h1 className="text-2xl font-bold text-slate-900">Upload Medical Report</h1>
-          <p className="text-xs text-slate-500">
-            Securely upload diagnostic reports, laboratory panels, imaging, or prescriptions.
-          </p>
-        </div>
-      </div>
+    <div className="max-w-3xl mx-auto space-y-6 sm:space-y-7 animate-in fade-in duration-300">
+      {/* Centered Page Header */}
+      <div className="text-center space-y-2">
+        <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+          Upload Medical Report
+        </h1>
+        <p className="text-sm text-slate-500 max-w-lg mx-auto">
+          Add your medical reports and test results to keep your health records in one secure place.
+        </p>
 
-      {/* Security Notice */}
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start gap-3 text-xs text-blue-900">
-        <ShieldCheck className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-        <div className="space-y-1">
-          <p className="font-semibold">Private & Tamper-Proof Storage</p>
-          <p className="text-blue-800 leading-relaxed">
-            All documents are stored in an encrypted private storage bucket. Only authorized users
-            can view files using time-limited, expiring tokens. Raw paths are never published.
-          </p>
-        </div>
-      </div>
-
-      {/* Notifications */}
-      {errorMsg && (
-        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-start gap-3 text-rose-900 text-xs">
-          <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <span className="font-semibold">Upload Failed:</span> {errorMsg}
+        {/* Security Assurance Banner */}
+        <div className="pt-2">
+          <div className="inline-flex items-center gap-2.5 px-4 py-2 rounded-2xl bg-blue-50/80 border border-blue-100 text-xs text-blue-900 shadow-sm">
+            <div className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center flex-shrink-0">
+              <Check className="w-3.5 h-3.5 stroke-[3]" />
+            </div>
+            <span>
+              Your files are encrypted and stored securely. Only you can access your medical information.
+            </span>
           </div>
-          <button onClick={() => setErrorMsg(null)} className="text-rose-500 hover:text-rose-700">
-            <X className="w-4 h-4" />
-          </button>
         </div>
-      )}
+      </div>
 
-      {successMsg && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex items-start gap-3 text-emerald-900 text-xs">
-          <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
-          <div className="flex-1 font-semibold">{successMsg}</div>
-        </div>
-      )}
+      {/* Main Form Card Container */}
+      <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/80 shadow-sm space-y-6">
+        {/* Error / Success Feedback */}
+        {errorMsg && (
+          <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-3">
+            <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
 
-      {/* Upload Form */}
-      <form onSubmit={handleSubmit} className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 space-y-6 shadow-sm">
-        {/* PDF File Dropzone */}
-        <div>
-          <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-2">
-            PDF Document <span className="text-rose-500">*</span>
-          </label>
+        {successMsg && (
+          <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-3">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span>{successMsg}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Drag & Drop Area */}
           <div
             onDragEnter={handleDrag}
             onDragLeave={handleDrag}
             onDragOver={handleDrag}
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition flex flex-col items-center justify-center gap-3 ${
+            className={`border-2 border-dashed rounded-3xl p-8 sm:p-10 text-center transition cursor-pointer relative overflow-hidden ${
               dragActive
                 ? "border-blue-500 bg-blue-50/50"
-                : selectedFile
-                ? "border-emerald-400 bg-emerald-50/30"
-                : "border-slate-300 hover:border-blue-400 hover:bg-slate-50"
+                : "border-blue-200/90 bg-blue-50/20 hover:bg-blue-50/40 hover:border-blue-300"
             }`}
           >
             <input
               ref={fileInputRef}
               type="file"
-              accept="application/pdf,.pdf"
+              accept=".pdf,application/pdf"
               onChange={handleFileChange}
               className="hidden"
             />
 
-            {selectedFile ? (
-              <div className="flex items-center gap-3 text-left w-full max-w-md p-3 bg-white rounded-lg border border-emerald-200 shadow-sm">
-                <FileCheck className="w-8 h-8 text-emerald-600 flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-slate-900 truncate">{selectedFile.name}</p>
-                  <p className="text-xs text-slate-500">
-                    {(selectedFile.size / 1024).toFixed(1)} KB • application/pdf
+            <div className="flex flex-col items-center justify-center space-y-3">
+              {/* Cloud Icon */}
+              <div className="w-14 h-14 rounded-2xl bg-blue-600 text-white flex items-center justify-center shadow-md shadow-blue-500/20">
+                <UploadCloud className="w-7 h-7 stroke-[2.2]" />
+              </div>
+
+              <div>
+                <p className="text-base font-bold text-slate-900">
+                  Drag and drop your PDF report here
+                </p>
+                <p className="text-xs text-blue-600 font-semibold mt-1">
+                  or click to browse files
+                </p>
+              </div>
+
+              <p className="text-[11px] text-slate-400">
+                Only PDF files are supported (max 10 MB).
+              </p>
+            </div>
+          </div>
+
+          {/* Selected File Progress / Ready Banner */}
+          {selectedFile && (
+            <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center flex-shrink-0 border border-rose-100">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-slate-900 truncate">
+                    {selectedFile.name}
+                  </p>
+                  <p className="text-[11px] text-slate-400">
+                    {formatFileSize(selectedFile.size)}
                   </p>
                 </div>
+              </div>
+
+              {/* Progress and status */}
+              <div className="flex items-center gap-3 flex-1 sm:max-w-xs">
+                <div className="flex-1 h-2 rounded-full bg-slate-200 overflow-hidden">
+                  <div
+                    className="h-full bg-blue-600 rounded-full transition-all duration-300"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+                <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 whitespace-nowrap">
+                  <span>Upload ready</span>
+                  <div className="w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center">
+                    <Check className="w-2.5 h-2.5 stroke-[3]" />
+                  </div>
+                </span>
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     setSelectedFile(null);
+                    if (fileInputRef.current) fileInputRef.current.value = "";
                   }}
-                  className="p-1 text-slate-400 hover:text-rose-600 rounded"
+                  className="text-slate-400 hover:text-slate-600 p-1"
                   title="Remove file"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
-            ) : (
-              <>
-                <div className="w-12 h-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center">
-                  <UploadCloud className="w-6 h-6" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-800">
-                    Click to select or drag and drop your PDF
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    PDF files only, up to 10 MB. Must contain valid %PDF- signature.
-                  </p>
-                </div>
-              </>
-            )}
+            </div>
+          )}
+
+          {/* Metadata Form Fields */}
+          <div className="space-y-4 pt-1">
+            {/* Row 1: Report Title and Category */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-800 mb-1.5">
+                  Report Title <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Annual Blood Test Report"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  required
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-800 mb-1.5">
+                  Category <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition cursor-pointer"
+                >
+                  {CATEGORIES.map((cat) => (
+                    <option key={cat.value} value={cat.value}>
+                      {cat.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Row 2: Report / Test Date */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-800 mb-1.5">
+                Report / Test Date <span className="text-rose-500">*</span>
+              </label>
+              <div className="relative">
+                <input
+                  type="date"
+                  max={todayStr}
+                  value={reportDate}
+                  onChange={(e) => setReportDate(e.target.value)}
+                  required
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition"
+                />
+              </div>
+            </div>
+
+            {/* Row 3: Clinical Notes (Optional) */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-800 mb-1.5">
+                Clinical Notes (Optional)
+              </label>
+              <textarea
+                rows={3}
+                placeholder="e.g. Routine annual blood test. All values within normal range."
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition"
+              />
+            </div>
           </div>
-        </div>
 
-        {/* Title */}
-        <div>
-          <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1">
-            Report Title <span className="text-rose-500">*</span>
-          </label>
-          <input
-            type="text"
-            required
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g. Complete Blood Count (CBC) Panel, Lumbar MRI"
-            maxLength={255}
-            className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
-          />
-        </div>
-
-        {/* Category & Date Grid */}
-        <div className="grid sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1">
-              Category <span className="text-rose-500">*</span>
-            </label>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+          {/* Action Footer Buttons */}
+          <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => router.push("/patient/reports")}
+              className="px-5 py-2.5 rounded-xl border border-slate-200 text-xs sm:text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
             >
-              {CATEGORIES.map((cat) => (
-                <option key={cat.value} value={cat.value}>
-                  {cat.label}
-                </option>
-              ))}
-            </select>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={uploading || !selectedFile}
+              className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-bold transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            >
+              {uploading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Encrypting & Uploading...</span>
+                </>
+              ) : (
+                <span>Upload Medical Report</span>
+              )}
+            </button>
           </div>
-
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1">
-              Report / Test Date <span className="text-rose-500">*</span>
-            </label>
-            <input
-              type="date"
-              required
-              max={todayStr}
-              value={reportDate}
-              onChange={(e) => setReportDate(e.target.value)}
-              className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
-            />
-            <span className="text-[11px] text-slate-500 block mt-1">
-              Cannot be set in the future.
-            </span>
-          </div>
-        </div>
-
-        {/* Optional Description / Clinical Notes */}
-        <div>
-          <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1">
-            Clinical Notes / Doctor Recommendations (Optional)
-          </label>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={3}
-            placeholder="Add relevant notes, diagnostic lab name, prescribing doctor, or symptom context..."
-            className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
-          />
-        </div>
-
-        {/* Action Buttons */}
-        <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-3">
-          <Link
-            href="/dashboard"
-            className="px-4 py-2.5 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
-          >
-            Cancel
-          </Link>
-          <button
-            type="submit"
-            disabled={uploading}
-            className="px-6 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition flex items-center gap-2 shadow-sm disabled:opacity-60"
-          >
-            {uploading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" /> Uploading & Securing...
-              </>
-            ) : (
-              <>
-                <UploadCloud className="w-4 h-4" /> Upload Medical Report
-              </>
-            )}
-          </button>
-        </div>
-      </form>
+        </form>
+      </div>
     </div>
   );
 }

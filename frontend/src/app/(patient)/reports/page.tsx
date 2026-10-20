@@ -6,28 +6,33 @@ import { useRouter } from "next/navigation";
 import QRCode from "qrcode";
 import {
   FileText,
-  Upload,
+  UploadCloud,
   Download,
   Trash2,
-  Filter,
   Search,
   Calendar,
   ShieldCheck,
-  ShieldAlert,
   Loader2,
   AlertCircle,
   RefreshCw,
   ExternalLink,
   CheckCircle2,
   X,
-  FileCheck,
   QrCode,
   Copy,
   Check,
   Clock,
   AlertTriangle,
-  Ban,
+  FlaskConical,
+  Scan,
+  Aperture,
+  Brain,
+  Pill,
+  MoreHorizontal,
+  ChevronDown,
   Layers,
+  ArrowUpDown,
+  Eye,
 } from "lucide-react";
 import {
   getMyReports,
@@ -39,15 +44,82 @@ import {
   ShareGrantResponse,
 } from "@/lib/api";
 
-const CATEGORIES = [
-  { value: "all", label: "All Records" },
-  { value: "blood_test", label: "Blood Tests" },
-  { value: "xray", label: "X-Rays" },
-  { value: "ct_scan", label: "CT Scans" },
-  { value: "mri", label: "MRI Scans" },
-  { value: "prescription", label: "Prescriptions" },
-  { value: "discharge_summary", label: "Discharge Summaries" },
-  { value: "other", label: "Other" },
+interface CategoryDef {
+  value: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  colorClass: string;
+  badgeClass: string;
+  iconBgClass: string;
+}
+
+const CATEGORY_MAP: Record<string, CategoryDef> = {
+  all: {
+    value: "all",
+    label: "All Reports",
+    icon: Layers,
+    colorClass: "text-blue-600",
+    badgeClass: "bg-blue-50 text-blue-600 border-blue-200",
+    iconBgClass: "bg-blue-50 text-blue-600",
+  },
+  blood_test: {
+    value: "blood_test",
+    label: "Blood Tests",
+    icon: FlaskConical,
+    colorClass: "text-rose-500",
+    badgeClass: "bg-rose-50 text-rose-600 border-rose-200",
+    iconBgClass: "bg-rose-50 text-rose-500",
+  },
+  xray: {
+    value: "xray",
+    label: "X-Rays",
+    icon: Scan,
+    colorClass: "text-blue-500",
+    badgeClass: "bg-blue-50 text-blue-600 border-blue-200",
+    iconBgClass: "bg-blue-50 text-blue-500",
+  },
+  ct_scan: {
+    value: "ct_scan",
+    label: "CT Scans",
+    icon: Aperture,
+    colorClass: "text-purple-500",
+    badgeClass: "bg-purple-50 text-purple-600 border-purple-200",
+    iconBgClass: "bg-purple-50 text-purple-500",
+  },
+  mri: {
+    value: "mri",
+    label: "MRI Scans",
+    icon: Brain,
+    colorClass: "text-emerald-500",
+    badgeClass: "bg-emerald-50 text-emerald-600 border-emerald-200",
+    iconBgClass: "bg-emerald-50 text-emerald-500",
+  },
+  prescription: {
+    value: "prescription",
+    label: "Prescriptions",
+    icon: Pill,
+    colorClass: "text-amber-500",
+    badgeClass: "bg-amber-50 text-amber-600 border-amber-200",
+    iconBgClass: "bg-amber-50 text-amber-500",
+  },
+  other: {
+    value: "other",
+    label: "Other",
+    icon: MoreHorizontal,
+    colorClass: "text-slate-500",
+    badgeClass: "bg-slate-50 text-slate-600 border-slate-200",
+    iconBgClass: "bg-slate-50 text-slate-500",
+  },
+};
+
+const CATEGORIES_LIST = [
+  CATEGORY_MAP.all,
+  CATEGORY_MAP.blood_test,
+  CATEGORY_MAP.xray,
+  CATEGORY_MAP.ct_scan,
+  CATEGORY_MAP.mri,
+  CATEGORY_MAP.prescription,
+  CATEGORY_MAP.other,
 ];
 
 const DURATION_OPTIONS = [
@@ -61,6 +133,7 @@ export default function ReportsLibraryPage() {
   const [reports, setReports] = useState<MedicalReport[]>([]);
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "title">("newest");
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
@@ -75,7 +148,7 @@ export default function ReportsLibraryPage() {
   const [reportToDelete, setReportToDelete] = useState<MedicalReport | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Share Modal State (supports 1 or multiple reports)
+  // Share Modal State
   const [reportsToShare, setReportsToShare] = useState<MedicalReport[]>([]);
   const [shareDuration, setShareDuration] = useState<number>(900);
   const [sharing, setSharing] = useState(false);
@@ -118,27 +191,64 @@ export default function ReportsLibraryPage() {
     fetchReports(selectedCategory);
   }, [selectedCategory]);
 
-  const filteredReports = reports.filter((r) => {
-    if (!searchQuery.trim()) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      r.title.toLowerCase().includes(q) ||
-      r.report_id.toLowerCase().includes(q) ||
-      r.category.toLowerCase().includes(q)
-    );
-  });
+  // Filtering & Sorting
+  const filteredReports = reports
+    .filter((r) => {
+      if (selectedCategory !== "all") {
+        if (selectedCategory === "other") {
+          const standardCats = ["blood_test", "xray", "ct_scan", "mri", "prescription"];
+          if (standardCats.includes(r.category)) return false;
+        } else if (r.category !== selectedCategory) {
+          return false;
+        }
+      }
+
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase();
+      return (
+        r.title.toLowerCase().includes(q) ||
+        r.report_id.toLowerCase().includes(q) ||
+        r.category.toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => {
+      if (sortBy === "newest") {
+        return new Date(b.report_date).getTime() - new Date(a.report_date).getTime();
+      }
+      if (sortBy === "oldest") {
+        return new Date(a.report_date).getTime() - new Date(b.report_date).getTime();
+      }
+      return a.title.localeCompare(b.title);
+    });
+
+  // Calculate counts for categories
+  const getCategoryCount = (catValue: string) => {
+    if (catValue === "all") return reports.length;
+    if (catValue === "other") {
+      const standardCats = ["blood_test", "xray", "ct_scan", "mri", "prescription"];
+      return reports.filter((r) => !standardCats.includes(r.category)).length;
+    }
+    return reports.filter((r) => r.category === catValue).length;
+  };
 
   const formatFileSize = (bytes: number) => {
     if (!bytes) return "0 KB";
     if (bytes < 1024 * 1024) {
-      return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / 1024).toFixed(0)} KB`;
     }
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const getCategoryLabel = (cat: string) => {
-    const found = CATEGORIES.find((c) => c.value === cat);
-    return found ? found.label : cat.replace("_", " ");
+  const formatDate = (dateStr: string) => {
+    try {
+      return new Date(dateStr).toLocaleDateString("en-US", {
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+      });
+    } catch {
+      return dateStr;
+    }
   };
 
   const toggleSelectReport = (reportId: string) => {
@@ -192,7 +302,6 @@ export default function ReportsLibraryPage() {
   };
 
   const openShareModal = (report: MedicalReport) => {
-    // If multiple reports are already selected and include this report, share the bundle
     if (selectedReportIds.includes(report.id) && selectedReportIds.length > 1) {
       const selected = reports.filter((r) => selectedReportIds.includes(r.id));
       setReportsToShare(selected);
@@ -217,11 +326,6 @@ export default function ReportsLibraryPage() {
     setShareDuration(900);
   };
 
-  const removeReportFromShare = (reportId: string) => {
-    if (reportsToShare.length <= 1) return;
-    setReportsToShare((prev) => prev.filter((r) => r.id !== reportId));
-  };
-
   const handleGenerateShare = async () => {
     if (reportsToShare.length === 0) return;
     setSharing(true);
@@ -231,7 +335,6 @@ export default function ReportsLibraryPage() {
       const share = await createReportShare(targetIds, shareDuration);
       setActiveShare(share);
 
-      // Generate QR Code data URL
       const qrUrl = await QRCode.toDataURL(share.share_url, {
         width: 280,
         margin: 2,
@@ -271,533 +374,485 @@ export default function ReportsLibraryPage() {
     }
   };
 
+  const allVisibleSelected =
+    filteredReports.length > 0 &&
+    filteredReports.every((r) => selectedReportIds.includes(r.id));
+
   return (
-    <div className="space-y-6">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-4">
+    <div className="space-y-6 sm:space-y-7 animate-in fade-in duration-300">
+      {/* Page Header with Privacy Assurance Pill */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Medical Records Library</h1>
-          <p className="text-xs text-slate-500">
-            View, download, and securely share your laboratory tests, diagnostic scans, and clinical reports via expiring QR codes.
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+            Medical Records Library
+          </h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Find, view and manage all your medical reports in one secure place.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => fetchReports(selectedCategory)}
-            className="p-2 text-slate-600 hover:text-blue-600 rounded-lg hover:bg-slate-100 transition"
-            title="Refresh reports"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
-          <Link
-            href="/upload"
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition shadow-sm"
-          >
-            <Upload className="w-4 h-4" /> Upload New Report
-          </Link>
+        {/* Right Privacy Pill */}
+        <div className="inline-flex items-center gap-2.5 px-3.5 py-2 rounded-2xl bg-blue-50/80 border border-blue-100 text-xs text-blue-900 self-start md:self-auto shadow-sm">
+          <div className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center flex-shrink-0">
+            <Check className="w-3.5 h-3.5 stroke-[3]" />
+          </div>
+          <div className="leading-tight">
+            <span className="font-semibold block text-blue-950">
+              Your records are private and secure
+            </span>
+            <span className="text-[11px] text-blue-700">Only you control what to share</span>
+          </div>
         </div>
       </div>
 
-      {/* Notifications */}
+      {/* Action Notification Banner */}
       {actionNotice && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 flex items-center justify-between text-emerald-900 text-xs">
+        <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs flex items-center justify-between gap-3 shadow-sm">
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <CheckCircle2 className="w-4 h-4 text-blue-600 flex-shrink-0" />
             <span>{actionNotice}</span>
           </div>
-          <button onClick={() => setActionNotice(null)} className="text-emerald-500 hover:text-emerald-700">
-            <X className="w-4 h-4" />
+          <button
+            onClick={() => setActionNotice(null)}
+            className="text-blue-700 hover:text-blue-900 font-bold text-xs"
+          >
+            ✕
           </button>
         </div>
       )}
 
-      {errorMsg && (
-        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-start gap-3 text-rose-900 text-xs">
-          <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <span className="font-semibold">Notice:</span> {errorMsg}
-          </div>
-          <button onClick={() => setErrorMsg(null)} className="text-rose-500 hover:text-rose-700">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {/* Search & Category Filter Bar */}
-      <div className="space-y-3">
-        <div className="relative">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+      {/* Control Bar: Search Input, Sort By, Select All */}
+      <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/80 shadow-sm flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 sm:gap-4">
+        {/* Search Input */}
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
           <input
             type="text"
+            placeholder="Search reports by title, type, hospital or keyword..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search reports by title or ID (e.g. REP-2026-XXXXXX)..."
-            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition bg-white"
+            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-xs sm:text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition"
           />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="absolute right-3 top-3 text-slate-400 hover:text-slate-600 text-xs font-bold"
+            >
+              ✕
+            </button>
+          )}
         </div>
 
-        {/* Filter Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-          {CATEGORIES.map((cat) => (
+        {/* Sort and Select Controls */}
+        <div className="flex items-center gap-3 justify-between md:justify-end">
+          {/* Sort By Dropdown */}
+          <div className="flex items-center gap-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+            <span className="text-slate-400 hidden sm:inline">Sort by</span>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="bg-transparent font-medium text-slate-800 focus:outline-none cursor-pointer"
+            >
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="title">Title (A-Z)</option>
+            </select>
+          </div>
+
+          {/* Select All Toggle */}
+          <button
+            onClick={handleSelectAll}
+            className={`flex items-center gap-2 text-xs font-semibold px-3.5 py-2 rounded-xl border transition ${
+              allVisibleSelected
+                ? "bg-blue-50 border-blue-300 text-blue-700"
+                : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={() => {}}
+              className="rounded text-blue-600 focus:ring-0 cursor-pointer pointer-events-none"
+            />
+            <span>Select All</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Category Filter Pills (Horizontal Scrollable) */}
+      <div className="flex items-center gap-2.5 overflow-x-auto pb-1 no-scrollbar">
+        {CATEGORIES_LIST.map((cat) => {
+          const Icon = cat.icon;
+          const isActive = selectedCategory === cat.value;
+          const count = getCategoryCount(cat.value);
+
+          return (
             <button
               key={cat.value}
               onClick={() => setSelectedCategory(cat.value)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition ${
-                selectedCategory === cat.value
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition border ${
+                isActive
+                  ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                  : "bg-white text-slate-600 border-slate-200/80 hover:bg-slate-50 hover:border-slate-300"
               }`}
             >
-              {cat.label}
+              <Icon
+                className={`w-3.5 h-3.5 ${
+                  isActive ? "text-white" : cat.colorClass
+                }`}
+              />
+              <span>{cat.label}</span>
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${
+                  isActive
+                    ? "bg-white/20 text-white"
+                    : "bg-slate-100 text-slate-500"
+                }`}
+              >
+                {count}
+              </span>
             </button>
-          ))}
-        </div>
+          );
+        })}
       </div>
 
-      {/* Content Area */}
+      {/* Reports List View */}
       {loading ? (
-        <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-3">
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-16 text-center space-y-3 shadow-sm">
           <Loader2 className="w-8 h-8 text-blue-600 animate-spin mx-auto" />
-          <p className="text-sm text-slate-600">Retrieving encrypted medical records...</p>
+          <p className="text-sm text-slate-600 font-medium">Retrieving medical reports...</p>
+        </div>
+      ) : errorMsg ? (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 text-amber-900 space-y-2">
+          <div className="flex items-center gap-2 font-semibold text-sm">
+            <AlertCircle className="w-5 h-5 text-amber-600" /> Unable to load records
+          </div>
+          <p className="text-xs text-amber-800">{errorMsg}</p>
         </div>
       ) : filteredReports.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-4">
-          <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
-            <FileText className="w-6 h-6" />
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-14 text-center space-y-4 shadow-sm">
+          <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
+            <FileText className="w-6 h-6 stroke-[1.8]" />
           </div>
           <div>
-            <h3 className="font-bold text-slate-900 text-base">No medical reports found</h3>
-            <p className="text-xs text-slate-500 max-w-sm mx-auto mt-1">
+            <h3 className="font-bold text-slate-900 text-base">No Medical Records Found</h3>
+            <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
               {searchQuery
-                ? "No records matched your search query. Try searching for a different keyword or category."
-                : "You have not uploaded any medical records in this category yet."}
+                ? `No medical reports matching "${searchQuery}". Try clearing search or choosing another category.`
+                : "You have not uploaded any records in this category yet."}
             </p>
           </div>
           <Link
-            href="/upload"
-            className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition"
+            href="/patient/upload"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold transition shadow-sm"
           >
-            <Upload className="w-4 h-4" /> Upload Your First Report
+            <UploadCloud className="w-4 h-4" /> Upload Medical Report
           </Link>
         </div>
       ) : (
-        <div className="space-y-4">
-          {/* Multi-Selection Control Bar */}
-          <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <label className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700 select-none">
-                <input
-                  type="checkbox"
-                  checked={
-                    filteredReports.length > 0 &&
-                    filteredReports.every((r) => selectedReportIds.includes(r.id))
-                  }
-                  onChange={handleSelectAll}
-                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
-                />
-                <span>Select All Visible ({filteredReports.length})</span>
-              </label>
+        <div className="space-y-3">
+          {filteredReports.map((report) => {
+            const isSelected = selectedReportIds.includes(report.id);
+            const categoryInfo = CATEGORY_MAP[report.category] || CATEGORY_MAP.other;
+            const CategoryIcon = categoryInfo.icon;
 
-              {selectedReportIds.length > 0 && (
-                <span className="text-xs px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 font-semibold border border-blue-200">
-                  {selectedReportIds.length} selected
-                </span>
-              )}
-            </div>
+            return (
+              <div
+                key={report.id}
+                className={`bg-white rounded-2xl p-4 sm:p-5 border transition shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                  isSelected
+                    ? "border-blue-500/80 ring-1 ring-blue-500/20 bg-blue-50/20"
+                    : "border-slate-200/80 hover:border-slate-300"
+                }`}
+              >
+                {/* Left Side: Checkbox + Icon + Title + Metadata */}
+                <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                  {/* Selection Checkbox */}
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleSelectReport(report.id)}
+                    className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer flex-shrink-0"
+                  />
 
-            {selectedReportIds.length > 0 && (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={openShareModalForSelected}
-                  className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow-sm"
-                >
-                  <QrCode className="w-3.5 h-3.5" /> Share Selected ({selectedReportIds.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedReportIds([])}
-                  className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium transition"
-                >
-                  Clear Selection
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Reports Grid / List */}
-          <div className="grid gap-4">
-            {filteredReports.map((report) => {
-              const isSelected = selectedReportIds.includes(report.id);
-              return (
-                <div
-                  key={report.id}
-                  className={`rounded-xl border p-5 shadow-sm transition flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
-                    isSelected
-                      ? "bg-blue-50/30 border-blue-400 ring-1 ring-blue-400/40"
-                      : "bg-white border-slate-200 hover:border-slate-300"
-                  }`}
-                >
-                  <div className="flex items-start gap-3.5">
-                    {/* Selection Checkbox */}
-                    <div className="pt-2">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => toggleSelectReport(report.id)}
-                        aria-label={`Select report ${report.title}`}
-                        className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
-                      />
-                    </div>
-
-                    <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <FileText className="w-5 h-5" />
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="font-bold text-slate-900 text-sm sm:text-base">
-                          {report.title}
-                        </h3>
-                        <span className="font-mono text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold">
-                          {report.report_id}
-                        </span>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
-                        <span className="inline-flex items-center gap-1 text-slate-700 font-medium">
-                          <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />
-                          {getCategoryLabel(report.category)}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-3.5 h-3.5" /> Date: {report.report_date}
-                        </span>
-                        <span>{formatFileSize(report.file_size_bytes)}</span>
-                      </div>
-
-                      {/* Verification Status Pill */}
-                      <div className="pt-1">
-                        {report.verification_status === "hospital_verified" ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <ShieldCheck className="w-3 h-3 text-emerald-600" /> Hospital Verified
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
-                            <ShieldAlert className="w-3 h-3 text-slate-400" /> Patient Self-Uploaded
-                          </span>
-                        )}
-                      </div>
-                    </div>
+                  {/* Category Colored Icon */}
+                  <div
+                    className={`w-11 h-11 rounded-xl ${categoryInfo.iconBgClass} flex items-center justify-center flex-shrink-0 shadow-sm`}
+                  >
+                    <CategoryIcon className="w-5 h-5" />
                   </div>
 
-                  {/* Action Buttons */}
-                  <div className="flex items-center gap-2 pt-3 sm:pt-0 border-t sm:border-t-0 border-slate-100 justify-end">
-                    {/* Share QR Button */}
-                    <button
-                      onClick={() => openShareModal(report)}
-                      className="px-3.5 py-2 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-semibold flex items-center gap-1.5 transition border border-emerald-200"
-                      title="Generate time-limited QR share"
-                    >
-                      <QrCode className="w-3.5 h-3.5" /> Share QR
-                    </button>
-
-                    {/* View / Download Button */}
-                    <button
-                      onClick={() => handleDownload(report)}
-                      disabled={downloadingId === report.id}
-                      className="px-3.5 py-2 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold flex items-center gap-1.5 transition border border-blue-200 disabled:opacity-60"
-                      title="Generate secure short-lived view link"
-                    >
-                      {downloadingId === report.id ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Preparing...
-                        </>
-                      ) : (
-                        <>
-                          <Download className="w-3.5 h-3.5" /> View / Download
-                        </>
-                      )}
-                    </button>
-
-                    {/* Delete Button */}
-                    <button
-                      onClick={() => setReportToDelete(report)}
-                      className="p-2 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition border border-transparent hover:border-rose-200"
-                      title="Delete report"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                  {/* Title & Report ID */}
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate">
+                      {report.title}
+                    </h3>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">
+                      Report ID: {report.report_id}
+                    </p>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+
+                {/* Middle Details: Date, Size, Category Badge */}
+                <div className="flex items-center gap-5 sm:gap-7 text-xs text-slate-600 pl-7 md:pl-0 flex-shrink-0">
+                  {/* Date Column */}
+                  <div>
+                    <span className="text-[10px] uppercase text-slate-400 block font-medium">
+                      Date
+                    </span>
+                    <span className="font-semibold text-slate-800">
+                      {formatDate(report.report_date)}
+                    </span>
+                  </div>
+
+                  {/* Size Column */}
+                  <div>
+                    <span className="text-[10px] uppercase text-slate-400 block font-medium">
+                      Size
+                    </span>
+                    <span className="font-semibold text-slate-800">
+                      {formatFileSize(report.file_size_bytes)}
+                    </span>
+                  </div>
+
+                  {/* Category Pill */}
+                  <div className="hidden sm:block">
+                    <span
+                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-medium ${categoryInfo.badgeClass}`}
+                    >
+                      <CategoryIcon className="w-3 h-3" />
+                      <span>{categoryInfo.label}</span>
+                    </span>
+                  </div>
+                </div>
+
+                {/* Right Actions: Share QR, View/Download, Delete */}
+                <div className="flex items-center gap-2.5 pl-7 md:pl-0 pt-2 md:pt-0 border-t md:border-t-0 border-slate-100 justify-end flex-shrink-0">
+                  {/* Share QR Button */}
+                  <button
+                    onClick={() => openShareModal(report)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition"
+                    title="Generate QR code to share"
+                  >
+                    <QrCode className="w-3.5 h-3.5" />
+                    <span>Share QR</span>
+                  </button>
+
+                  {/* View / Download Button */}
+                  <button
+                    onClick={() => handleDownload(report)}
+                    disabled={downloadingId === report.id}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 transition shadow-sm disabled:opacity-60"
+                  >
+                    {downloadingId === report.id ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Opening...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>View / Download</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Delete Button */}
+                  <button
+                    onClick={() => setReportToDelete(report)}
+                    className="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition border border-transparent hover:border-rose-100"
+                    title="Delete report"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {/* Share QR Modal (Supports Single & Multiple Reports) */}
+      {/* Floating Multi-Report Action Bar (when reports are selected) */}
+      {selectedReportIds.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-slate-900 text-white rounded-2xl px-5 py-3.5 shadow-2xl flex items-center gap-4 animate-in slide-in-from-bottom-4 duration-200 border border-slate-800">
+          <div className="flex items-center gap-2 text-xs sm:text-sm font-semibold">
+            <div className="w-5 h-5 rounded-full bg-blue-500 text-white text-xs flex items-center justify-center font-bold">
+              {selectedReportIds.length}
+            </div>
+            <span>
+              {selectedReportIds.length === 1
+                ? "1 report selected"
+                : `${selectedReportIds.length} reports selected`}
+            </span>
+          </div>
+
+          <button
+            onClick={openShareModalForSelected}
+            className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs sm:text-sm font-bold transition shadow-md"
+          >
+            <QrCode className="w-4 h-4" />
+            <span>Generate Shared QR</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedReportIds([])}
+            className="text-xs text-slate-400 hover:text-white transition underline"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
+      {/* Share QR Modal */}
       {reportsToShare.length > 0 && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 sm:p-8 shadow-xl space-y-5 border border-slate-200 max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 duration-150">
             {/* Modal Header */}
-            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
-              <div>
-                <div className="inline-flex items-center gap-1.5 text-emerald-600 text-xs font-semibold mb-1">
-                  <QrCode className="w-4 h-4" />
-                  <span>
-                    {reportsToShare.length === 1
-                      ? "Secure Report Sharing"
-                      : `Multi-Report QR Sharing (${reportsToShare.length} Records)`}
-                  </span>
+            <div className="flex items-start justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                  <QrCode className="w-5 h-5" />
                 </div>
-                {reportsToShare.length === 1 ? (
-                  <>
-                    <h3 className="text-lg font-bold text-slate-900 truncate max-w-xs sm:max-w-md">
-                      {reportsToShare[0].title}
-                    </h3>
-                    <span className="font-mono text-xs text-slate-500 font-semibold">
-                      {reportsToShare[0].report_id}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <h3 className="text-lg font-bold text-slate-900">
-                      Share {reportsToShare.length} Medical Reports with One QR
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      Generate a single session link allowing the doctor to review all selected records.
-                    </p>
-                  </>
-                )}
+                <div>
+                  <h3 className="font-bold text-slate-900 text-base sm:text-lg">
+                    {reportsToShare.length > 1
+                      ? `Share ${reportsToShare.length} Medical Reports`
+                      : "Share Medical Report"}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Expiring, revocable access via QR code
+                  </p>
+                </div>
               </div>
               <button
-                onClick={() => setReportsToShare([])}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                onClick={() => {
+                  setReportsToShare([]);
+                  setActiveShare(null);
+                  setQrDataUrl(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 text-sm font-bold"
               >
-                <X className="w-5 h-5" />
+                ✕
               </button>
             </div>
 
-            {/* Error in modal */}
-            {shareError && (
-              <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 text-xs text-rose-800 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
-                <div className="flex-1">{shareError}</div>
-              </div>
-            )}
-
+            {/* If Share Not Generated Yet: Duration Selector */}
             {!activeShare ? (
-              /* Share Configuration State */
               <div className="space-y-4">
-                {/* List of included reports */}
-                {reportsToShare.length > 1 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
-                      <span>Included Records ({reportsToShare.length})</span>
-                      <span className="text-[11px] text-slate-400">All accessible via this single QR</span>
+                {/* Reports Summary */}
+                <div className="bg-slate-50 rounded-xl p-3 border border-slate-200/80 max-h-32 overflow-y-auto space-y-1.5">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
+                    Selected Reports
+                  </span>
+                  {reportsToShare.map((r) => (
+                    <div key={r.id} className="text-xs font-semibold text-slate-800 truncate">
+                      • {r.title} ({r.category.replace("_", " ")})
                     </div>
-                    <div className="max-h-36 overflow-y-auto space-y-1.5 p-2 bg-slate-50 rounded-xl border border-slate-200">
-                      {reportsToShare.map((r) => (
-                        <div
-                          key={r.id}
-                          className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200 text-xs"
-                        >
-                          <div className="flex items-center gap-2 truncate">
-                            <FileText className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
-                            <span className="font-semibold text-slate-900 truncate">{r.title}</span>
-                            <span className="font-mono text-[10px] text-slate-500">{r.report_id}</span>
-                          </div>
-                          {reportsToShare.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => removeReportFromShare(r.id)}
-                              className="text-slate-400 hover:text-rose-600 p-1 rounded"
-                              title="Remove from this share QR"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                  ))}
+                </div>
 
+                {/* Duration Options */}
                 <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">
-                    Share Expiration Duration
+                  <label className="block text-xs font-semibold text-slate-700 mb-2">
+                    Access Duration
                   </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="space-y-2">
                     {DURATION_OPTIONS.map((opt) => (
-                      <button
+                      <label
                         key={opt.seconds}
-                        type="button"
-                        onClick={() => setShareDuration(opt.seconds)}
-                        className={`p-3 rounded-xl border text-xs font-medium text-center transition ${
+                        className={`flex items-center justify-between p-3 rounded-xl border text-xs cursor-pointer transition ${
                           shareDuration === opt.seconds
-                            ? "border-emerald-500 bg-emerald-50 text-emerald-800 font-semibold ring-1 ring-emerald-500"
-                            : "border-slate-200 hover:bg-slate-50 text-slate-700"
+                            ? "bg-blue-50 border-blue-400 text-blue-900 font-semibold"
+                            : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
                         }`}
                       >
-                        {opt.label}
-                      </button>
+                        <span>{opt.label}</span>
+                        <input
+                          type="radio"
+                          name="duration"
+                          checked={shareDuration === opt.seconds}
+                          onChange={() => setShareDuration(opt.seconds)}
+                          className="text-blue-600 focus:ring-0"
+                        />
+                      </label>
                     ))}
                   </div>
                 </div>
 
-                {/* Bearer Credential Warning Banner */}
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-xs text-amber-900 space-y-1.5">
-                  <div className="flex items-center gap-2 font-semibold">
-                    <AlertTriangle className="w-4 h-4 text-amber-600" /> Bearer Credential Notice
-                  </div>
-                  <p className="leading-relaxed">
-                    {reportsToShare.length === 1
-                      ? "This QR code generates an opaque, temporary access link. Anyone who scans this code can view this single report until it expires or is revoked."
-                      : `This QR code generates an opaque, temporary access link allowing the recipient to view and download all ${reportsToShare.length} selected reports until the session expires or is revoked.`}
-                  </p>
-                </div>
-
-                <div className="pt-2 flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setReportsToShare([])}
-                    className="px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleGenerateShare}
-                    disabled={sharing}
-                    className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition flex items-center gap-2 disabled:opacity-60 shadow-sm"
-                  >
-                    {sharing ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" /> Generating QR...
-                      </>
-                    ) : (
-                      <>
-                        <QrCode className="w-4 h-4" /> Generate Secure QR
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              /* Active Share Generated State */
-              <div className="space-y-5 text-center">
-                {/* QR Display */}
-                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 flex flex-col items-center justify-center space-y-3">
-                  {qrDataUrl ? (
-                    <img
-                      src={qrDataUrl}
-                      alt="Medical Report Share QR"
-                      className="w-56 h-56 rounded-xl shadow-sm border border-slate-200 bg-white p-2"
-                    />
-                  ) : (
-                    <div className="w-56 h-56 flex items-center justify-center">
-                      <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
-                    </div>
-                  )}
-
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-semibold">
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>
-                      Expires: {new Date(activeShare.expires_at).toLocaleTimeString()} ({Math.round(activeShare.expires_in_seconds / 60)} min)
-                    </span>
-                  </div>
-
-                  {/* Included reports count pill */}
-                  <div className="text-xs text-slate-600">
-                    <span className="font-semibold text-slate-800">
-                      {activeShare.reports_count || reportsToShare.length}{" "}
-                      {(activeShare.reports_count || reportsToShare.length) === 1 ? "Report" : "Reports"}
-                    </span>{" "}
-                    authorized in this QR session
-                  </div>
-                </div>
-
-                {/* List of included reports */}
-                {reportsToShare.length > 1 && (
-                  <div className="text-left space-y-1.5 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-                    <div className="font-semibold text-slate-700 mb-1">Reports in this QR bundle:</div>
-                    <div className="max-h-28 overflow-y-auto space-y-1">
-                      {reportsToShare.map((r) => (
-                        <div key={r.id} className="flex items-center gap-2 text-slate-600 truncate">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
-                          <span className="truncate font-medium">{r.title}</span>
-                          <span className="font-mono text-[10px] text-slate-400">({r.report_id})</span>
-                        </div>
-                      ))}
-                    </div>
+                {shareError && (
+                  <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl">
+                    {shareError}
                   </div>
                 )}
 
-                {/* Share Link Input with Copy Button */}
-                <div className="space-y-1.5 text-left">
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
-                    Opaque Share Link
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      readOnly
-                      value={activeShare.share_url}
-                      className="flex-1 px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-700 truncate"
+                <button
+                  onClick={handleGenerateShare}
+                  disabled={sharing}
+                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold transition flex items-center justify-center gap-2 shadow-sm disabled:opacity-60"
+                >
+                  {sharing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Generating Secure QR...</span>
+                    </>
+                  ) : (
+                    <>
+                      <QrCode className="w-4 h-4" />
+                      <span>Generate QR Code</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            ) : (
+              /* If Share Generated: Display QR Code */
+              <div className="space-y-4 text-center">
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 inline-block mx-auto shadow-inner">
+                  {qrDataUrl && (
+                    <img
+                      src={qrDataUrl}
+                      alt="Medical Report Share QR Code"
+                      className="w-56 h-56 mx-auto rounded-lg"
                     />
-                    <button
-                      type="button"
-                      onClick={handleCopyLink}
-                      className="px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition flex items-center gap-1.5 flex-shrink-0"
-                    >
-                      {copied ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-300" /> Copied!
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" /> Copy Link
-                        </>
-                      )}
-                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-semibold border border-emerald-200">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>
+                      Expires in: {Math.round(activeShare.expires_in_seconds / 60)} minutes
+                    </span>
                   </div>
+                  <p className="text-xs text-slate-500">
+                    Clinicians can scan this QR code with any camera or tablet to access authorized reports.
+                  </p>
                 </div>
 
-                {/* Warning Reminder */}
-                <p className="text-[11px] text-slate-500 leading-relaxed text-left">
-                  • The recipient page will validate this token and generate temporary download URLs for all authorized reports.<br />
-                  • No patient name, Aadhaar, or unselected medical records are exposed.<br />
-                  • You can terminate access immediately using the revoke button below.
-                </p>
-
-                {/* Actions: Done / Revoke */}
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-3">
+                {/* Copy Link Input */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={activeShare.share_url}
+                    className="flex-1 px-3 py-2 bg-slate-50 rounded-xl border border-slate-200 text-xs font-mono text-slate-700 select-all"
+                  />
                   <button
-                    type="button"
-                    onClick={handleRevokeShare}
-                    disabled={revoking}
-                    className="px-4 py-2 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold transition flex items-center gap-1.5 disabled:opacity-60"
+                    onClick={handleCopyLink}
+                    className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition flex items-center gap-1"
                   >
-                    {revoking ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" /> Revoking...
-                      </>
-                    ) : (
-                      <>
-                        <Ban className="w-3.5 h-3.5" /> Revoke Access Now
-                      </>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setReportsToShare([])}
-                    className="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition shadow-sm"
-                  >
-                    Done
+                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copied ? "Copied" : "Copy"}</span>
                   </button>
                 </div>
+
+                {/* Revoke Button */}
+                <button
+                  onClick={handleRevokeShare}
+                  disabled={revoking}
+                  className="w-full py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-xl text-xs font-bold transition border border-rose-200 flex items-center justify-center gap-1.5"
+                >
+                  {revoking ? "Revoking..." : "Revoke Access Immediately"}
+                </button>
               </div>
             )}
           </div>
@@ -807,38 +862,30 @@ export default function ReportsLibraryPage() {
       {/* Delete Confirmation Modal */}
       {reportToDelete && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4 border border-slate-200">
-            <div className="w-10 h-10 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center">
-              <Trash2 className="w-5 h-5" />
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="w-10 h-10 rounded-full bg-rose-50 flex items-center justify-center">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold text-slate-900 text-base">Delete Report?</h3>
             </div>
-            <div>
-              <h3 className="text-base font-bold text-slate-900">Delete Medical Report?</h3>
-              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                Are you sure you want to delete <span className="font-semibold text-slate-800">"{reportToDelete.title}"</span> ({reportToDelete.report_id})? This will permanently delete the document from private storage and cannot be undone.
-              </p>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Are you sure you want to delete{" "}
+              <strong className="text-slate-800">"{reportToDelete.title}"</strong>? This will permanently remove the encrypted document and revoke all active share grants.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
               <button
-                type="button"
                 onClick={() => setReportToDelete(null)}
-                className="px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
               >
                 Cancel
               </button>
               <button
-                type="button"
                 onClick={confirmDelete}
                 disabled={deleting}
-                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition disabled:opacity-60 flex items-center gap-1.5"
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition disabled:opacity-60"
               >
-                {deleting ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Deleting...
-                  </>
-                ) : (
-                  "Delete Report"
-                )}
+                {deleting ? "Deleting..." : "Confirm Delete"}
               </button>
             </div>
           </div>
