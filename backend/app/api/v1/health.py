@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from app.core.config import settings
+from app.core.database import check_supabase_connection
 
 router = APIRouter()
 
@@ -11,5 +12,5 @@ def health_check():
         "status": "healthy",
         "service": "Patient Medical Report Management API",
         "environment": settings.ENVIRONMENT,
-        "supabase_connected": bool(settings.SUPABASE_URL and settings.SUPABASE_KEY),
+        "supabase_connected": check_supabase_connection(),
     }

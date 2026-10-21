@@ -1,3 +1,4 @@
+import os
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -17,6 +18,7 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: str = (
         "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
     )
+    CORS_ORIGIN_REGEX: str = r"^https:\/\/([a-zA-Z0-9_-]+\.)*vercel\.app$"
 
     # Supabase credentials (populated in environment)
     SUPABASE_URL: str = ""
@@ -38,6 +40,29 @@ class Settings(BaseSettings):
     # JWT Settings
     JWT_SECRET_KEY: str = "insecure-development-secret-key-replace-in-production"
     JWT_ALGORITHM: str = "HS256"
+
+    def model_post_init(self, __context) -> None:
+        """Post-initialization to normalize environment and production flags."""
+        # Detect production mode from ENVIRONMENT, ENV, APP_ENV, or RENDER platform
+        detected_env = (
+            os.getenv("ENVIRONMENT")
+            or os.getenv("ENV")
+            or os.getenv("APP_ENV")
+        )
+        if detected_env:
+            self.ENVIRONMENT = detected_env.strip().lower()
+        elif os.getenv("RENDER") in ("true", "1", "True") and self.ENVIRONMENT == "development":
+            self.ENVIRONMENT = "production"
+
+        if self.ENVIRONMENT in ("production", "prod"):
+            # In production, debug defaults to False unless explicitly set True
+            debug_env = os.getenv("DEBUG")
+            if debug_env is None:
+                self.DEBUG = False
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT.lower() in ("production", "prod")
 
     @property
     def is_supabase_configured(self) -> bool:
@@ -87,6 +112,19 @@ class Settings(BaseSettings):
                 origins.append(cleaned)
 
         return origins or default_origins
+
+    @property
+    def effective_cors_origins(self) -> List[str]:
+        """Combines ALLOWED_ORIGINS, FRONTEND_BASE_URL, and production domains for CORS middleware."""
+        origins = list(self.cors_origins)
+        if self.FRONTEND_BASE_URL:
+            cleaned_frontend = str(self.FRONTEND_BASE_URL).strip().strip("'\"").rstrip("/")
+            if cleaned_frontend and cleaned_frontend not in origins:
+                origins.append(cleaned_frontend)
+        production_vercel = "https://patient-medical-report-management-s-taupe.vercel.app"
+        if production_vercel not in origins:
+            origins.append(production_vercel)
+        return origins
 
 
 settings = Settings()

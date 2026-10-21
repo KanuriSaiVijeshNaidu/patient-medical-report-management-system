@@ -1,7 +1,18 @@
 import { getAccessToken } from "./supabaseClient";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+function getApiBaseUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+  const raw = (envUrl || "http://localhost:8000/api/v1").trim().replace(/\/+$/, "");
+  if (!raw.endsWith("/api/v1")) {
+    if (raw.endsWith("/api")) {
+      return `${raw}/v1`;
+    }
+    return `${raw}/api/v1`;
+  }
+  return raw;
+}
+
+const API_BASE_URL = getApiBaseUrl();
 
 export interface PatientProfile {
   id: string;
@@ -195,7 +206,12 @@ export async function registerPatient(
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    const errorMsg = data?.detail || "Registration failed. Please check your details.";
+    let errorMsg = "Registration failed. Please check your details.";
+    if (typeof data?.detail === "string") {
+      errorMsg = data.detail;
+    } else if (Array.isArray(data?.detail) && data.detail.length > 0) {
+      errorMsg = data.detail[0]?.msg || errorMsg;
+    }
     throw new Error(errorMsg);
   }
 

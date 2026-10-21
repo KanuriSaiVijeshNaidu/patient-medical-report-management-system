@@ -3,9 +3,12 @@
 Note: Credentials must be configured in environment variables.
 In development without credentials, client initialization remains safe.
 """
+import logging
 from typing import Optional
 from supabase import create_client, Client
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 _supabase_client: Optional[Client] = None
 
@@ -61,4 +64,25 @@ def reset_supabase_client() -> None:
 def is_db_configured() -> bool:
     """Checks whether database credentials are provided."""
     return bool(settings.SUPABASE_URL and settings.active_supabase_key)
+
+
+def check_supabase_connection() -> bool:
+    """Verifies actual connectivity to Supabase by executing a lightweight query.
+
+    Uses the service-role client to query the database. Returns True if
+    the database responds successfully, False otherwise.
+    """
+    if not is_db_configured():
+        return False
+    try:
+        client = get_supabase_client()
+        if not client:
+            return False
+        # Lightweight probe query: checks connectivity without mutating data
+        res = client.table("patient_profiles").select("id").limit(1).execute()
+        return res is not None
+    except Exception as e:
+        logger.warning("Supabase health check connection test failed: %s", e)
+        return False
+
 
