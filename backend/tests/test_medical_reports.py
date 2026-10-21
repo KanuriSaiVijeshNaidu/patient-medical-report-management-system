@@ -164,19 +164,43 @@ class MockReportsSupabaseClient(MockSupabaseClient):
                     if not p_profiles:
                         raise Exception("Patient profile not found for authenticated user.")
 
+                    patient_profile_id = str(p_profiles[0]["id"])
+                    storage_path = params.get("p_file_storage_path", "")
+                    mime_type = params.get("p_mime_type", "")
+
+                    # 1. Database constraint: storage path regex format check (code 23514)
+                    import re
+                    if not re.match(r"^reports/[0-9a-fA-F-]+/[0-9a-fA-F-]+\.(pdf|jpg|jpeg|png)$", storage_path, re.IGNORECASE):
+                        raise Exception("{'message': 'Invalid storage path format.', 'code': '23514'}")
+
+                    # 2. Database constraint: patient directory must match caller profile
+                    if not storage_path.lower().startswith(f"reports/{patient_profile_id.lower()}/"):
+                        raise Exception("{'message': 'Invalid storage path format: patient directory mismatch.', 'code': '23514'}")
+
+                    # 3. Database constraint: MIME type allowlist check
+                    if mime_type not in ("application/pdf", "image/jpeg", "image/png"):
+                        raise Exception("{'message': 'Only PDF, JPEG, and PNG documents are permitted for medical reports.', 'code': '23514'}")
+
+                    # 4. Database constraint: extension matches MIME type
+                    lower_path = storage_path.lower()
+                    if (lower_path.endswith(".pdf") and mime_type != "application/pdf") or \
+                       ((lower_path.endswith(".jpg") or lower_path.endswith(".jpeg")) and mime_type != "image/jpeg") or \
+                       (lower_path.endswith(".png") and mime_type != "image/png"):
+                        raise Exception("{'message': 'MIME type does not match storage path extension.', 'code': '23514'}")
+
                     report_uuid = str(uuid4())
                     record = {
                         "id": report_uuid,
                         "report_id": params["p_report_id"],
-                        "patient_id": str(p_profiles[0]["id"]),
+                        "patient_id": patient_profile_id,
                         "upload_source": "patient",
                         "title": params["p_title"],
                         "category": params["p_category"],
                         "report_date": params["p_report_date"],
-                        "file_storage_path": params["p_file_storage_path"],
+                        "file_storage_path": storage_path,
                         "file_checksum_sha256": params["p_file_checksum_sha256"],
                         "file_size_bytes": params["p_file_size_bytes"],
-                        "mime_type": params["p_mime_type"],
+                        "mime_type": mime_type,
                         "verification_status": "unverified",
                         "metadata": params.get("p_metadata", {}),
                         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -810,3 +834,218 @@ def test_delete_report_storage_failure_gracefully_handled(monkeypatch):
         assert len(del_audits) == 1
     finally:
         app.dependency_overrides.clear()
+
+
+# -----------------------------------------------------------------------------
+# 5. Regression Tests: Storage Paths, Multi-Format (PDF, PNG, JPG, JPEG) & Security
+# -----------------------------------------------------------------------------
+def test_regression_pdf_upload_persists_metadata_and_correct_storage_path(monkeypatch):
+    """Regression: PDF upload persists metadata and exact storage path format."""
+    user_id = uuid4()
+    profile_id = str(uuid4())
+    mock_db = MockReportsSupabaseClient()
+    mock_db.table("patient_profiles").data.append({
+        "id": profile_id,
+        "user_id": str(user_id),
+        "patient_id": "MED-2026-REG001",
+    })
+    monkeypatch.setattr("app.api.v1.reports.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.reports.get_supabase_client", lambda: mock_db)
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=user_id, phone="+919876543210")
+
+    try:
+        files = {"file": ("blood_test.pdf", io.BytesIO(DUMMY_PDF_BYTES), "application/pdf")}
+        data = {
+            "title": "Complete Blood Count",
+            "category": "blood_test",
+            "report_date": "2026-02-10",
+            "description": "Routine annual health checkup",
+        }
+        res = client.post("/api/v1/reports/upload", files=files, data=data)
+        assert res.status_code == 201
+        report = res.json()
+        assert report["title"] == "Complete Blood Count"
+        assert report["category"] == "blood_test"
+        assert report["mime_type"] == "application/pdf"
+
+        # Verify DB record
+        db_reports = mock_db.table("medical_reports").data
+        assert len(db_reports) == 1
+        rep = db_reports[0]
+        assert rep["file_storage_path"].startswith(f"reports/{profile_id}/")
+        assert rep["file_storage_path"].endswith(".pdf")
+        assert rep["mime_type"] == "application/pdf"
+        assert rep["metadata"]["description"] == "Routine annual health checkup"
+        assert rep["metadata"]["original_filename"] == "blood_test.pdf"
+
+        # Verify storage file
+        assert rep["file_storage_path"] in mock_db._storage.files
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_regression_png_upload_persists_metadata_and_correct_storage_path(monkeypatch):
+    """Regression: PNG upload persists metadata and exact storage path format."""
+    user_id = uuid4()
+    profile_id = str(uuid4())
+    mock_db = MockReportsSupabaseClient()
+    mock_db.table("patient_profiles").data.append({
+        "id": profile_id,
+        "user_id": str(user_id),
+        "patient_id": "MED-2026-REG002",
+    })
+    monkeypatch.setattr("app.api.v1.reports.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.reports.get_supabase_client", lambda: mock_db)
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=user_id, phone="+919876543210")
+
+    try:
+        files = {"file": ("chest_xray.png", io.BytesIO(DUMMY_PNG_BYTES), "image/png")}
+        data = {
+            "title": "Chest X-Ray Scan",
+            "category": "xray",
+            "report_date": "2026-02-12",
+            "description": "Post-recovery clearance scan",
+        }
+        res = client.post("/api/v1/reports/upload", files=files, data=data)
+        assert res.status_code == 201
+        report = res.json()
+        assert report["title"] == "Chest X-Ray Scan"
+        assert report["category"] == "xray"
+        assert report["mime_type"] == "image/png"
+
+        db_reports = mock_db.table("medical_reports").data
+        assert len(db_reports) == 1
+        rep = db_reports[0]
+        assert rep["file_storage_path"].startswith(f"reports/{profile_id}/")
+        assert rep["file_storage_path"].endswith(".png")
+        assert rep["mime_type"] == "image/png"
+        assert rep["metadata"]["description"] == "Post-recovery clearance scan"
+        assert rep["metadata"]["original_filename"] == "chest_xray.png"
+
+        assert rep["file_storage_path"] in mock_db._storage.files
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_regression_jpg_upload_persists_metadata_and_correct_storage_path(monkeypatch):
+    """Regression: JPG photo upload persists metadata and exact storage path format."""
+    user_id = uuid4()
+    profile_id = str(uuid4())
+    mock_db = MockReportsSupabaseClient()
+    mock_db.table("patient_profiles").data.append({
+        "id": profile_id,
+        "user_id": str(user_id),
+        "patient_id": "MED-2026-REG003",
+    })
+    monkeypatch.setattr("app.api.v1.reports.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.reports.get_supabase_client", lambda: mock_db)
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=user_id, phone="+919876543210")
+
+    try:
+        files = {"file": ("dermatology.jpg", io.BytesIO(DUMMY_JPEG_BYTES), "image/jpeg")}
+        data = {
+            "title": "Dermatology Lesion Photograph",
+            "category": "other",
+            "report_date": "2026-02-14",
+            "description": "Right forearm lesion evaluation",
+        }
+        res = client.post("/api/v1/reports/upload", files=files, data=data)
+        assert res.status_code == 201
+        report = res.json()
+        assert report["title"] == "Dermatology Lesion Photograph"
+        assert report["category"] == "other"
+        assert report["mime_type"] == "image/jpeg"
+
+        db_reports = mock_db.table("medical_reports").data
+        assert len(db_reports) == 1
+        rep = db_reports[0]
+        assert rep["file_storage_path"].startswith(f"reports/{profile_id}/")
+        assert rep["file_storage_path"].endswith(".jpg")
+        assert rep["mime_type"] == "image/jpeg"
+        assert rep["metadata"]["description"] == "Right forearm lesion evaluation"
+        assert rep["metadata"]["original_filename"] == "dermatology.jpg"
+
+        assert rep["file_storage_path"] in mock_db._storage.files
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_regression_jpeg_upload_persists_metadata_and_correct_storage_path(monkeypatch):
+    """Regression: JPEG photo upload persists metadata and exact storage path format."""
+    user_id = uuid4()
+    profile_id = str(uuid4())
+    mock_db = MockReportsSupabaseClient()
+    mock_db.table("patient_profiles").data.append({
+        "id": profile_id,
+        "user_id": str(user_id),
+        "patient_id": "MED-2026-REG004",
+    })
+    monkeypatch.setattr("app.api.v1.reports.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.reports.get_supabase_client", lambda: mock_db)
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=user_id, phone="+919876543210")
+
+    try:
+        files = {"file": ("prescription_scan.jpeg", io.BytesIO(DUMMY_JPEG_BYTES), "image/jpeg")}
+        data = {
+            "title": "Signed Prescription Slip",
+            "category": "prescription",
+            "report_date": "2026-02-15",
+            "description": "Follow-up prescription from specialist",
+        }
+        res = client.post("/api/v1/reports/upload", files=files, data=data)
+        assert res.status_code == 201
+        report = res.json()
+        assert report["title"] == "Signed Prescription Slip"
+        assert report["category"] == "prescription"
+        assert report["mime_type"] == "image/jpeg"
+
+        db_reports = mock_db.table("medical_reports").data
+        assert len(db_reports) == 1
+        rep = db_reports[0]
+        assert rep["file_storage_path"].startswith(f"reports/{profile_id}/")
+        assert rep["file_storage_path"].endswith(".jpeg")
+        assert rep["mime_type"] == "image/jpeg"
+        assert rep["metadata"]["description"] == "Follow-up prescription from specialist"
+        assert rep["metadata"]["original_filename"] == "prescription_scan.jpeg"
+
+        assert rep["file_storage_path"] in mock_db._storage.files
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_regression_database_storage_path_constraint_failure_cleans_up_storage(monkeypatch):
+    """Regression: When DB rejects path format with 23514, orphaned file is cleaned up."""
+    user_id = uuid4()
+    profile_id = str(uuid4())
+    mock_db = MockReportsSupabaseClient()
+    mock_db.table("patient_profiles").data.append({
+        "id": profile_id,
+        "user_id": str(user_id),
+        "patient_id": "MED-2026-REG005",
+    })
+
+    # Override RPC to simulate PostgreSQL error 23514 'Invalid storage path format.'
+    def failing_rpc(func_name, params):
+        class FailingRPC:
+            def execute(self):
+                raise Exception("{'message': 'Invalid storage path format.', 'code': '23514'}")
+        return FailingRPC()
+
+    mock_db.rpc = failing_rpc
+    monkeypatch.setattr("app.api.v1.reports.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.reports.get_supabase_client", lambda: mock_db)
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=user_id, phone="+919876543210")
+
+    try:
+        files = {"file": ("report.png", io.BytesIO(DUMMY_PNG_BYTES), "image/png")}
+        data = {"title": "X-Ray Report", "category": "xray", "report_date": "2026-02-15"}
+        res = client.post("/api/v1/reports/upload", files=files, data=data)
+        assert res.status_code == 500
+        assert "Invalid storage path format" in res.json()["detail"]
+        assert "23514" in res.json()["detail"]
+
+        # Crucial security guarantee: orphaned file was cleaned up from storage
+        assert len(mock_db._storage.files) == 0
+    finally:
+        app.dependency_overrides.clear()
+
