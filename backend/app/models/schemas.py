@@ -16,6 +16,32 @@ class PatientRegisterRequest(BaseModel):
     phone: str = Field(..., min_length=7, max_length=25)
     blood_group: Literal["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"]
     date_of_birth: Optional[date] = None
+    email: Optional[str] = None
+
+    @field_validator("email")
+    @classmethod
+    def validate_optional_email(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        cleaned = v.strip().lower()
+        if not cleaned:
+            return None
+        if len(cleaned) > 255:
+            raise ValueError("Email address cannot exceed 255 characters.")
+        if not re.match(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$", cleaned):
+            raise ValueError("Invalid email address format.")
+        return cleaned
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def validate_date_of_birth(cls, v: Optional[date]) -> Optional[date]:
+        if v is None:
+            return None
+        if v > date.today():
+            raise ValueError("Date of birth cannot be in the future.")
+        if v.year < 1900:
+            raise ValueError("Date of birth cannot be prior to the year 1900.")
+        return v
 
     @field_validator("username")
     @classmethod
@@ -90,6 +116,18 @@ class PatientProfileCreate(PatientProfileBase):
 class PatientProfileUpdate(BaseModel):
     blood_group: Optional[Literal["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"]] = None
     emergency_contact_phone: Optional[str] = None
+    date_of_birth: Optional[date] = None
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def validate_date_of_birth(cls, v: Optional[date]) -> Optional[date]:
+        if v is None:
+            return None
+        if v > date.today():
+            raise ValueError("Date of birth cannot be in the future.")
+        if v.year < 1900:
+            raise ValueError("Date of birth cannot be prior to the year 1900.")
+        return v
 
 
 class PatientRegistrationRequest(PatientProfileBase):
@@ -104,6 +142,7 @@ class PatientProfileResponse(PatientProfileBase):
     patient_id: str
     verification_status: str
     phone_masked: Optional[str] = None
+    email: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     masked_aadhaar_ref: Optional[str] = None

@@ -33,7 +33,9 @@ import {
   Layers,
   ArrowUpDown,
   Eye,
+  ImageIcon,
 } from "lucide-react";
+import { formatDateOnly } from "@/lib/utils";
 import {
   getMyReports,
   getReportDownloadUrl,
@@ -240,15 +242,7 @@ export default function ReportsLibraryPage() {
   };
 
   const formatDate = (dateStr: string) => {
-    try {
-      return new Date(dateStr).toLocaleDateString("en-US", {
-        month: "short",
-        day: "2-digit",
-        year: "numeric",
-      });
-    } catch {
-      return dateStr;
-    }
+    return formatDateOnly(dateStr);
   };
 
   const toggleSelectReport = (reportId: string) => {

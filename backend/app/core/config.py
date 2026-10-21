@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # Storage & Share settings
     STORAGE_BUCKET_NAME: str = "medical-reports"
     SIGNED_URL_EXPIRATION_SECONDS: int = 300
-    MAX_REPORT_FILE_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB default
+    MAX_REPORT_FILE_SIZE_BYTES: int = 40 * 1024 * 1024  # 40 MB default (41,943,040 bytes)
     DEFAULT_SHARE_EXPIRATION_SECONDS: int = 900  # 15 minutes default
     FRONTEND_BASE_URL: str = "http://localhost:3000"
 

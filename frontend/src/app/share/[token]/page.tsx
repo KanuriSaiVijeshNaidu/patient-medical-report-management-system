@@ -16,8 +16,10 @@ import {
   ExternalLink,
   Files,
   CheckCircle2,
+  ImageIcon,
 } from "lucide-react";
 import { viewSharedReport, SharedReportViewResponse, SharedReportItem } from "@/lib/api";
+import { formatDateOnly } from "@/lib/utils";
 
 const CATEGORY_LABELS: Record<string, string> = {
   blood_test: "Blood Test",
@@ -195,7 +197,7 @@ export default function SharedReportViewerPage({
                       {currentReport?.report_id}
                     </span>
                     <span className="flex items-center gap-1">
-                      <Calendar className="w-3.5 h-3.5" /> Report Date: {currentReport?.report_date}
+                      <Calendar className="w-3.5 h-3.5" /> Report Date: {formatDateOnly(currentReport?.report_date)}
                     </span>
                     <span>Size: {formatFileSize(currentReport?.file_size_bytes || 0)}</span>
                   </div>
@@ -238,6 +240,7 @@ export default function SharedReportViewerPage({
                   <div className="grid gap-3">
                     {reportsList.map((rep, idx) => {
                       const isSelected = idx === activeReportIndex;
+                      const isRepImage = rep.mime_type?.startsWith("image/");
                       return (
                         <div
                           key={rep.report_id}
@@ -250,7 +253,7 @@ export default function SharedReportViewerPage({
                         >
                           <div className="flex items-start gap-3">
                             <div className="w-9 h-9 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-                              <FileText className="w-4 h-4" />
+                              {isRepImage ? <ImageIcon className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
                             </div>
                             <div className="space-y-1">
                               <div className="flex flex-wrap items-center gap-2">
@@ -264,7 +267,7 @@ export default function SharedReportViewerPage({
                                   {getCategoryLabel(rep.category)}
                                 </span>
                                 <span className="flex items-center gap-1">
-                                  <Calendar className="w-3 h-3" /> {rep.report_date}
+                                  <Calendar className="w-3 h-3" /> {formatDateOnly(rep.report_date)}
                                 </span>
                                 <span>{formatFileSize(rep.file_size_bytes)}</span>
                                 {rep.verification_status === "hospital_verified" ? (
@@ -289,7 +292,7 @@ export default function SharedReportViewerPage({
                               }}
                               className="px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow-sm"
                             >
-                              <Download className="w-3.5 h-3.5" /> View / Download PDF
+                              <Download className="w-3.5 h-3.5" /> {isRepImage ? "View / Download Image" : "View / Download PDF"}
                             </button>
                           </div>
                         </div>
@@ -322,13 +325,15 @@ export default function SharedReportViewerPage({
                   <div>
                     <span className="text-slate-500 block">Report Date</span>
                     <span className="font-semibold text-slate-800">
-                      {currentReport?.report_date}
+                      {formatDateOnly(currentReport?.report_date)}
                     </span>
                   </div>
                   <div>
                     <span className="text-slate-500 block">File Format</span>
                     <span className="font-semibold text-slate-800">
-                      PDF Document ({currentReport?.mime_type || "application/pdf"})
+                      {currentReport?.mime_type?.startsWith("image/")
+                        ? `Medical Photo / Scan (${currentReport?.mime_type})`
+                        : `PDF Document (${currentReport?.mime_type || "application/pdf"})`}
                     </span>
                   </div>
                   <div>
@@ -356,6 +361,22 @@ export default function SharedReportViewerPage({
                 </div>
               </div>
 
+              {/* Inline Preview for Photos / Scans */}
+              {currentReport?.mime_type?.startsWith("image/") && currentReport?.download_url && (
+                <div className="rounded-xl border border-slate-200 overflow-hidden bg-slate-50 p-3 sm:p-4 text-center space-y-2">
+                  <div className="text-[11px] font-semibold text-slate-600 flex items-center justify-center gap-1.5">
+                    <ImageIcon className="w-4 h-4 text-blue-600" />
+                    <span>Authorized Medical Image Preview</span>
+                  </div>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={currentReport.download_url}
+                    alt={currentReport.title}
+                    className="max-h-[480px] w-auto mx-auto rounded-lg object-contain shadow-sm border border-slate-200 bg-white"
+                  />
+                </div>
+              )}
+
               {/* View / Download Primary Action */}
               <div className="text-center pt-2">
                 <button
@@ -363,7 +384,11 @@ export default function SharedReportViewerPage({
                   onClick={() => handleOpenPdf(currentReport?.download_url)}
                   className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm transition shadow-md hover:shadow-lg"
                 >
-                  <Download className="w-4 h-4" /> Open Selected Document ({currentReport?.title})
+                  <Download className="w-4 h-4" />{" "}
+                  {currentReport?.mime_type?.startsWith("image/")
+                    ? "Open Full-Resolution Image"
+                    : "Open Selected Document"}{" "}
+                  ({currentReport?.title})
                 </button>
                 <p className="text-[11px] text-slate-400 mt-2">
                   Opens a fresh, secure temporary view stream in a separate tab.

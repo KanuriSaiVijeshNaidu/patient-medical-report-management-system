@@ -37,6 +37,7 @@ import {
   PatientProfile,
   MedicalReport,
 } from "@/lib/api";
+import { formatDateOnly } from "@/lib/utils";
 
 export default function PatientDashboardPage() {
   const router = useRouter();
@@ -52,6 +53,7 @@ export default function PatientDashboardPage() {
   // Edit form state
   const [bloodGroup, setBloodGroup] = useState("");
   const [emergencyPhone, setEmergencyPhone] = useState("");
+  const [editDob, setEditDob] = useState("");
   const [updating, setUpdating] = useState(false);
 
   const fetchData = async () => {
@@ -62,6 +64,7 @@ export default function PatientDashboardPage() {
       setProfile(data);
       setBloodGroup(data.blood_group || "");
       setEmergencyPhone(data.emergency_contact_phone || "");
+      setEditDob(data.date_of_birth || "");
 
       // Load recent medical reports
       try {
@@ -129,6 +132,7 @@ export default function PatientDashboardPage() {
       const updated = await updateProfile({
         blood_group: bloodGroup || undefined,
         emergency_contact_phone: emergencyPhone || undefined,
+        date_of_birth: editDob || undefined,
       });
       setProfile(updated);
       setShowEditModal(false);
@@ -308,7 +312,7 @@ export default function PatientDashboardPage() {
                     <span>Date of Birth</span>
                   </div>
                   <span className="font-semibold text-sm tracking-wide">
-                    {profile.date_of_birth}
+                    {formatDateOnly(profile.date_of_birth)}
                   </span>
                 </div>
 
@@ -552,7 +556,11 @@ export default function PatientDashboardPage() {
                     <span>Email Address</span>
                   </div>
                   <span className="font-semibold text-slate-900 font-mono truncate max-w-[160px]">
-                    {profile.patient_id ? `${profile.patient_id.toLowerCase()}@patient.internal` : "patient@health.org"}
+                    {profile.email ? (
+                      profile.email
+                    ) : (
+                      <span className="text-slate-400 italic font-sans font-normal">Not provided</span>
+                    )}
                   </span>
                 </div>
 
@@ -623,6 +631,19 @@ export default function PatientDashboardPage() {
               </button>
             </div>
             <form onSubmit={handleSaveUpdates} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1">
+                  Date of Birth
+                </label>
+                <input
+                  type="date"
+                  value={editDob}
+                  onChange={(e) => setEditDob(e.target.value)}
+                  max={new Date().toISOString().split("T")[0]}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1">
                   Blood Group

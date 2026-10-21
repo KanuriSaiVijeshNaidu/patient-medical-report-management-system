@@ -13,6 +13,8 @@ from tests.test_patient_auth import MockSupabaseClient
 client = TestClient(app)
 
 DUMMY_PDF_BYTES = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF"
+DUMMY_PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+DUMMY_JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x14\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x00\xff\xd9"
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +31,7 @@ class MockStorageBucket:
 
     def upload(self, path, file_bytes, options=None):
         content_type = (options or {}).get("content-type")
-        if content_type != "application/pdf":
+        if content_type not in ["application/pdf", "image/jpeg", "image/png"]:
             raise Exception("mime type not supported")
         self.files[path] = file_bytes
         return {"path": path}
@@ -255,8 +257,8 @@ def test_unauthenticated_requests_denied():
 # -----------------------------------------------------------------------------
 # 2. File Validation: Extension, Magic Bytes, Empty & Oversized Files
 # -----------------------------------------------------------------------------
-def test_upload_rejects_non_pdf_extension(monkeypatch):
-    """File without .pdf extension is rejected with HTTP 400."""
+def test_upload_rejects_unsupported_extension(monkeypatch):
+    """File without an allowed extension (.pdf, .jpg, .jpeg, .png) is rejected with HTTP 400."""
     user_id = uuid4()
     profile_id = str(uuid4())
     mock_db = MockReportsSupabaseClient()
@@ -270,17 +272,17 @@ def test_upload_rejects_non_pdf_extension(monkeypatch):
     app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=user_id, phone="+919876543210")
 
     try:
-        files = {"file": ("report.png", io.BytesIO(DUMMY_PDF_BYTES), "application/pdf")}
+        files = {"file": ("report.exe", io.BytesIO(DUMMY_PDF_BYTES), "application/pdf")}
         data = {"title": "Blood Test", "category": "blood_test", "report_date": "2026-02-15"}
         res = client.post("/api/v1/reports/upload", files=files, data=data)
         assert res.status_code == 400
-        assert "pdf extension required" in res.json()["detail"].lower()
+        assert "unsupported file format" in res.json()["detail"].lower()
     finally:
         app.dependency_overrides.clear()
 
 
 def test_upload_rejects_mismatched_mime_type(monkeypatch):
-    """File claiming text/plain or image/jpeg MIME type is rejected with HTTP 400."""
+    """File claiming text/plain MIME type is rejected with HTTP 400."""
     user_id = uuid4()
     profile_id = str(uuid4())
     mock_db = MockReportsSupabaseClient()
@@ -298,13 +300,13 @@ def test_upload_rejects_mismatched_mime_type(monkeypatch):
         data = {"title": "Blood Test", "category": "blood_test", "report_date": "2026-02-15"}
         res = client.post("/api/v1/reports/upload", files=files, data=data)
         assert res.status_code == 400
-        assert "must be 'application/pdf'" in res.json()["detail"].lower()
+        assert "invalid mime type" in res.json()["detail"].lower()
     finally:
         app.dependency_overrides.clear()
 
 
-def test_upload_rejects_invalid_pdf_magic_bytes(monkeypatch):
-    """File named .pdf with application/pdf MIME but missing %PDF- header is rejected with HTTP 400."""
+def test_upload_rejects_invalid_magic_bytes(monkeypatch):
+    """File named .pdf with application/pdf MIME but invalid header is rejected with HTTP 400."""
     user_id = uuid4()
     profile_id = str(uuid4())
     mock_db = MockReportsSupabaseClient()
@@ -324,7 +326,67 @@ def test_upload_rejects_invalid_pdf_magic_bytes(monkeypatch):
         data = {"title": "Lab Results", "category": "blood_test", "report_date": "2026-02-15"}
         res = client.post("/api/v1/reports/upload", files=files, data=data)
         assert res.status_code == 400
-        assert "magic header (%pdf-)" in res.json()["detail"].lower()
+        assert "invalid file signature" in res.json()["detail"].lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_valid_png_upload_succeeds(monkeypatch):
+    """Uploading a valid PNG photo report succeeds and sets image/png MIME type."""
+    user_id = uuid4()
+    profile_id = str(uuid4())
+    mock_db = MockReportsSupabaseClient()
+    mock_db.table("patient_profiles").data.append({
+        "id": profile_id,
+        "user_id": str(user_id),
+        "patient_id": "MED-2026-TEST01",
+    })
+    monkeypatch.setattr("app.api.v1.reports.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.reports.get_supabase_client", lambda: mock_db)
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=user_id, phone="+919876543210")
+
+    try:
+        files = {"file": ("xray.png", io.BytesIO(DUMMY_PNG_BYTES), "image/png")}
+        data = {"title": "Chest X-Ray Photo", "category": "xray", "report_date": "2026-02-15"}
+        res = client.post("/api/v1/reports/upload", files=files, data=data)
+        assert res.status_code == 201
+        body = res.json()
+        assert body["title"] == "Chest X-Ray Photo"
+        assert body["category"] == "xray"
+        assert body["mime_type"] == "image/png"
+        stored_path = list(mock_db._storage.files.keys())[0]
+        assert stored_path.startswith(f"reports/{profile_id}/")
+        assert stored_path.endswith(".png")
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_valid_jpeg_upload_succeeds(monkeypatch):
+    """Uploading a valid JPEG photo report succeeds and sets image/jpeg MIME type."""
+    user_id = uuid4()
+    profile_id = str(uuid4())
+    mock_db = MockReportsSupabaseClient()
+    mock_db.table("patient_profiles").data.append({
+        "id": profile_id,
+        "user_id": str(user_id),
+        "patient_id": "MED-2026-TEST01",
+    })
+    monkeypatch.setattr("app.api.v1.reports.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.reports.get_supabase_client", lambda: mock_db)
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=user_id, phone="+919876543210")
+
+    try:
+        files = {"file": ("scan.jpg", io.BytesIO(DUMMY_JPEG_BYTES), "image/jpeg")}
+        data = {"title": "Skin Lesion Photo", "category": "other", "report_date": "2026-02-15"}
+        res = client.post("/api/v1/reports/upload", files=files, data=data)
+        assert res.status_code == 201
+        body = res.json()
+        assert body["title"] == "Skin Lesion Photo"
+        assert body["category"] == "other"
+        assert body["mime_type"] == "image/jpeg"
+        stored_path = list(mock_db._storage.files.keys())[0]
+        assert stored_path.startswith(f"reports/{profile_id}/")
+        assert stored_path.endswith(".jpg")
     finally:
         app.dependency_overrides.clear()
 

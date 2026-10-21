@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import os
 from datetime import date, datetime
 from typing import List, Optional
 from uuid import UUID, uuid4
@@ -32,8 +33,69 @@ ALLOWED_CATEGORIES = {
     "discharge_summary",
     "other",
 }
-PDF_MAGIC_BYTES = b"%PDF-"
+ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+ALLOWED_MIME_TYPES = {"application/pdf", "image/jpeg", "image/png"}
+
+PDF_MAGIC = b"%PDF-"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+JPEG_MAGIC = b"\xff\xd8\xff"
 CHUNK_SIZE = 64 * 1024  # 64 KB streaming chunks
+
+
+def detect_file_type_and_verify(first_chunk: bytes, filename: str, content_type: Optional[str]) -> tuple[str, str]:
+    """Validates magic bytes against extension and MIME type.
+    Returns (detected_mime_type, canonical_extension).
+    """
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file extension '{ext}'. Only PDF (.pdf) and photo formats (.jpg, .jpeg, .png) are accepted.",
+        )
+
+    # Magic byte signature verification
+    if first_chunk.startswith(PDF_MAGIC):
+        detected_mime = "application/pdf"
+        canonical_ext = ".pdf"
+    elif first_chunk.startswith(PNG_MAGIC):
+        detected_mime = "image/png"
+        canonical_ext = ".png"
+    elif first_chunk.startswith(JPEG_MAGIC):
+        detected_mime = "image/jpeg"
+        canonical_ext = ".jpg" if ext == ".jpg" else ".jpeg"
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file signature. File content does not match any supported format (PDF, JPEG, PNG).",
+        )
+
+    # Ensure claimed extension matches actual binary magic header
+    if detected_mime == "application/pdf" and ext != ".pdf":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File content is a PDF, but filename extension is not .pdf.",
+        )
+    elif detected_mime == "image/png" and ext != ".png":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File content is a PNG image, but filename extension is not .png.",
+        )
+    elif detected_mime == "image/jpeg" and ext not in (".jpg", ".jpeg"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File content is a JPEG image, but filename extension is not .jpg or .jpeg.",
+        )
+
+    # Ensure claimed MIME type doesn't contradict binary magic header
+    if content_type:
+        ct = content_type.lower().strip()
+        if ct in ALLOWED_MIME_TYPES and ct != detected_mime:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"MIME type mismatch: header claims '{content_type}' but file signature is '{detected_mime}'.",
+            )
+
+    return detected_mime, canonical_ext
 
 
 def _get_caller_patient_profile(client, user_id: UUID) -> dict:
@@ -123,17 +185,20 @@ async def upload_medical_report(
 
     # 3. File extension & MIME type validation
     filename = file.filename or ""
-    if not filename.lower().endswith(".pdf"):
+    file_ext = os.path.splitext(filename)[1].lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF documents are accepted for medical reports (.pdf extension required).",
+            detail=f"Unsupported file format '{file_ext}'. Only PDF (.pdf) and photo formats (.jpg, .jpeg, .png) are accepted.",
         )
 
-    if file.content_type and file.content_type.lower() != "application/pdf":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid MIME type '{file.content_type}'. Must be 'application/pdf'.",
-        )
+    if file.content_type:
+        clean_ct = file.content_type.lower().strip()
+        if clean_ct not in ALLOWED_MIME_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid MIME type '{file.content_type}'. Must be application/pdf, image/jpeg, or image/png.",
+            )
 
     # 4. Streaming read, file size enforcement, magic byte validation & SHA-256 computation
     file_bytes_list = []
@@ -141,6 +206,8 @@ async def upload_medical_report(
     max_size = settings.MAX_REPORT_FILE_SIZE_BYTES
     sha256_hasher = hashlib.sha256()
     is_first_chunk = True
+    detected_mime = "application/pdf"
+    canonical_ext = ".pdf"
 
     try:
         while True:
@@ -157,11 +224,9 @@ async def upload_medical_report(
 
             if is_first_chunk:
                 is_first_chunk = False
-                if not chunk.startswith(PDF_MAGIC_BYTES):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Invalid file signature. File does not contain a valid PDF magic header (%PDF-).",
-                    )
+                detected_mime, canonical_ext = detect_file_type_and_verify(
+                    chunk, filename, file.content_type
+                )
 
             sha256_hasher.update(chunk)
             file_bytes_list.append(chunk)
@@ -188,7 +253,7 @@ async def upload_medical_report(
 
     # 5. Generate server-side storage path and candidate Report ID
     file_uuid = str(uuid4())
-    storage_path = f"reports/{patient_profile_id}/{file_uuid}.pdf"
+    storage_path = f"reports/{patient_profile_id}/{file_uuid}{canonical_ext}"
     candidate_report_id = generate_report_id()
 
     # 6. Upload file to private Supabase Storage
@@ -196,7 +261,7 @@ async def upload_medical_report(
         client.storage.from_(settings.STORAGE_BUCKET_NAME).upload(
             storage_path,
             file_bytes,
-            {"content-type": "application/pdf"},
+            {"content-type": detected_mime},
         )
     except Exception as e:
         logger.error("Failed to upload file to storage: %s", str(e))
@@ -230,7 +295,7 @@ async def upload_medical_report(
         "p_file_storage_path": storage_path,
         "p_file_checksum_sha256": file_checksum,
         "p_file_size_bytes": total_size,
-        "p_mime_type": "application/pdf",
+        "p_mime_type": detected_mime,
         "p_metadata": metadata_payload,
         "p_ip_address": client_ip,
         "p_request_id": req_id,

@@ -157,6 +157,7 @@ class MockSupabaseTable:
         self._filter_val = None
         self._ilike_field = None
         self._ilike_val = None
+        self._pending_update = None
 
     def select(self, fields="*"):
         return self
@@ -164,6 +165,10 @@ class MockSupabaseTable:
     def eq(self, field, value):
         self._filter_field = field
         self._filter_val = value
+        if self._pending_update:
+            for item in self.data:
+                if str(item.get(field)) == str(value):
+                    item.update(self._pending_update)
         return self
 
     def ilike(self, field, value):
@@ -193,9 +198,11 @@ class MockSupabaseTable:
         return self
 
     def update(self, updates):
-        for item in self.data:
-            if self._filter_field and str(item.get(self._filter_field)) == str(self._filter_val):
-                item.update(updates)
+        self._pending_update = updates
+        if self._filter_field and self._filter_val:
+            for item in self.data:
+                if str(item.get(self._filter_field)) == str(self._filter_val):
+                    item.update(updates)
         return self
 
     def execute(self):
@@ -1770,5 +1777,142 @@ def test_repeated_login_logout_cycles_with_patient_isolation(monkeypatch):
     res_me_beta2 = client.get("/api/v1/patients/me", headers={"Authorization": f"Bearer {token_beta_2}"})
     assert res_me_beta2.status_code == 200
     assert res_me_beta2.json()["patient_id"] == patient_id_beta
+
+
+# -----------------------------------------------------------------------------
+# 18. DOB & Optional Email Registration and Profile Tests
+# -----------------------------------------------------------------------------
+def test_patient_registration_with_dob_and_optional_email(monkeypatch):
+    """Patient registers with explicit Date of Birth and optional Email."""
+    mock_db = MockSupabaseClient()
+    monkeypatch.setattr("app.api.v1.patients.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.patients.get_supabase_client", lambda: mock_db)
+
+    payload = {
+        "full_name": "Alice Green",
+        "username": "alice_green",
+        "password": "Password123!",
+        "phone": "+919876500001",
+        "date_of_birth": "1995-06-15",
+        "email": "Alice.Green@Example.COM",
+        "gender": "female",
+        "blood_group": "A+",
+        "emergency_contact_phone": "+919876500002",
+    }
+    res = client.post("/api/v1/patients/register", json=payload)
+    assert res.status_code == 201
+    data = res.json()
+    assert data["username"] == "alice_green"
+
+    # Verify profile DOB recorded correctly
+    profiles = mock_db.table("patient_profiles").data
+    assert len(profiles) == 1
+    assert profiles[0]["date_of_birth"] == "1995-06-15"
+
+    # Verify user record has normalized lowercase email
+    users = mock_db.table("users").data
+    assert len(users) == 1
+    assert users[0]["email"] == "alice.green@example.com"
+
+
+def test_patient_registration_without_email_has_no_internal_placeholder(monkeypatch):
+    """Patient registers without email; no fake @patient.internal placeholder is created."""
+    mock_db = MockSupabaseClient()
+    monkeypatch.setattr("app.api.v1.patients.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.patients.get_supabase_client", lambda: mock_db)
+
+    payload = {
+        "full_name": "Bob Without Email",
+        "username": "bob_no_email",
+        "password": "Password123!",
+        "phone": "+919876500003",
+        "date_of_birth": "1990-11-20",
+        "email": None,
+        "gender": "male",
+        "blood_group": "O+",
+    }
+    res = client.post("/api/v1/patients/register", json=payload)
+    assert res.status_code == 201
+
+    users = mock_db.table("users").data
+    assert len(users) == 1
+    # Email must be None, never @patient.internal
+    assert users[0]["email"] is None
+
+
+def test_patient_registration_rejects_invalid_email_format(monkeypatch):
+    """Registration with invalid email format fails Pydantic schema validation with 422."""
+    payload = {
+        "full_name": "Charlie Invalid",
+        "username": "charlie_inv",
+        "password": "Password123!",
+        "phone": "+919876500004",
+        "date_of_birth": "1992-03-10",
+        "email": "not-an-email-address",
+        "gender": "male",
+    }
+    res = client.post("/api/v1/patients/register", json=payload)
+    assert res.status_code == 422
+
+
+def test_patient_registration_rejects_future_dob(monkeypatch):
+    """Registration with future Date of Birth fails schema validation with 422."""
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    payload = {
+        "full_name": "Future Baby",
+        "username": "future_baby",
+        "password": "Password123!",
+        "phone": "+919876500005",
+        "date_of_birth": tomorrow,
+        "gender": "other",
+    }
+    res = client.post("/api/v1/patients/register", json=payload)
+    assert res.status_code == 422
+
+
+def test_patient_profile_update_dob_success(monkeypatch):
+    """Authenticated patient can update Date of Birth and receive correct updated profile."""
+    user_id = uuid4()
+    profile_id = str(uuid4())
+    mock_db = MockSupabaseClient()
+    mock_db.table("users").data.append({
+        "id": str(user_id),
+        "email": "patient@domain.org",
+        "role": "patient",
+        "phone_e164": "+919876543210",
+    })
+    mock_db.table("patient_profiles").data.append({
+        "id": profile_id,
+        "user_id": str(user_id),
+        "patient_id": "MED-2026-DOBTEST",
+        "full_name": "DOB Test Patient",
+        "date_of_birth": "2000-01-01",
+        "gender": "female",
+        "blood_group": "B+",
+        "emergency_contact_phone": "+919876543211",
+        "verification_status": "phone_verified",
+        "created_at": "2026-10-01T00:00:00Z",
+        "updated_at": None,
+    })
+    monkeypatch.setattr("app.api.v1.patients.is_db_configured", lambda: True)
+    monkeypatch.setattr("app.api.v1.patients.get_supabase_client", lambda: mock_db)
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=user_id, phone="+919876543210")
+
+    try:
+        update_res = client.patch(
+            "/api/v1/patients/me",
+            json={"date_of_birth": "1994-08-25"}
+        )
+        assert update_res.status_code == 200
+        body = update_res.json()
+        assert body["date_of_birth"] == "1994-08-25"
+        assert body["email"] == "patient@domain.org"
+
+        # Check DB updated
+        prof = mock_db.table("patient_profiles").data[0]
+        assert prof["date_of_birth"] == "1994-08-25"
+    finally:
+        app.dependency_overrides.clear()
+
 
 

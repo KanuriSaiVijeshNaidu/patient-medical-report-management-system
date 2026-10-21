@@ -17,6 +17,7 @@ import {
   Check,
   Sparkles,
   Lock,
+  Image as ImageIcon,
 } from "lucide-react";
 import { uploadMedicalReport } from "@/lib/api";
 
@@ -30,7 +31,9 @@ const CATEGORIES = [
   { value: "other", label: "Other Diagnostic / Clinical" },
 ];
 
-const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_FILE_SIZE_BYTES = 40 * 1024 * 1024; // 40 MB
+const ALLOWED_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png"];
+const ALLOWED_MIME_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 
 export default function UploadReportPage() {
   const router = useRouter();
@@ -66,14 +69,15 @@ export default function UploadReportPage() {
     setSuccessMsg(null);
 
     // Validate extension
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
-      setErrorMsg("Invalid file format. Only PDF documents (.pdf) are permitted.");
+    const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      setErrorMsg("Invalid file format. Only PDF documents (.pdf) and photos (.jpg, .jpeg, .png) are permitted.");
       return false;
     }
 
     // Validate MIME type
-    if (file.type && file.type !== "application/pdf") {
-      setErrorMsg("File MIME type must be application/pdf.");
+    if (file.type && !ALLOWED_MIME_TYPES.includes(file.type.toLowerCase())) {
+      setErrorMsg("Invalid file type. Allowed formats: PDF, JPEG, or PNG.");
       return false;
     }
 
@@ -85,7 +89,7 @@ export default function UploadReportPage() {
 
     if (file.size > MAX_FILE_SIZE_BYTES) {
       const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
-      setErrorMsg(`File size (${sizeMb} MB) exceeds maximum allowed limit of 10 MB.`);
+      setErrorMsg(`File size (${sizeMb} MB) exceeds maximum allowed limit of 40 MB.`);
       return false;
     }
 
@@ -154,7 +158,7 @@ export default function UploadReportPage() {
     }
 
     if (!selectedFile) {
-      setErrorMsg("Please select a PDF document to upload.");
+      setErrorMsg("Please select a file (PDF or photo) to upload.");
       return;
     }
 
@@ -255,7 +259,7 @@ export default function UploadReportPage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf,application/pdf"
+              accept=".pdf,.jpg,.jpeg,.png,image/jpeg,image/png,application/pdf"
               onChange={handleFileChange}
               className="hidden"
             />
@@ -268,7 +272,7 @@ export default function UploadReportPage() {
 
               <div>
                 <p className="text-base font-bold text-slate-900">
-                  Drag and drop your PDF report here
+                  Drag and drop your report or medical photo here
                 </p>
                 <p className="text-xs text-blue-600 font-semibold mt-1">
                   or click to browse files
@@ -276,7 +280,7 @@ export default function UploadReportPage() {
               </div>
 
               <p className="text-[11px] text-slate-400">
-                Only PDF files are supported (max 10 MB).
+                PDF, JPEG, or PNG files up to 40 MB.
               </p>
             </div>
           </div>
@@ -285,8 +289,16 @@ export default function UploadReportPage() {
           {selectedFile && (
             <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center flex-shrink-0 border border-rose-100">
-                  <FileText className="w-5 h-5" />
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 border ${
+                  selectedFile.type.startsWith("image/") || /\.(jpg|jpeg|png)$/i.test(selectedFile.name)
+                    ? "bg-indigo-50 text-indigo-600 border-indigo-100"
+                    : "bg-rose-50 text-rose-600 border-rose-100"
+                }`}>
+                  {selectedFile.type.startsWith("image/") || /\.(jpg|jpeg|png)$/i.test(selectedFile.name) ? (
+                    <ImageIcon className="w-5 h-5" />
+                  ) : (
+                    <FileText className="w-5 h-5" />
+                  )}
                 </div>
                 <div className="min-w-0">
                   <p className="text-xs font-bold text-slate-900 truncate">

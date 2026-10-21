@@ -59,6 +59,7 @@ def register_patient(
     clean_username = payload.username.strip().lower()
     user_phone = normalize_phone(payload.phone)
     phone_checksum = hash_phone(user_phone)
+    clean_email = payload.email.strip().lower() if payload.email and payload.email.strip() else None
     client = get_supabase_client()
 
     # 1. Duplicate username check
@@ -101,19 +102,30 @@ def register_patient(
         except Exception:
             pass
 
+    # 2b. Duplicate email check (only when email is provided)
+    if client and clean_email:
+        try:
+            res_email = client.table("users").select("id").ilike("email", clean_email).execute()
+            if res_email.data:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An account is already associated with this email address. Please use another email or sign in.",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
     # 3. Hash password using bcrypt
     password_hash = hash_password(payload.password)
     candidate_patient_id = generate_patient_id()
-    internal_email = f"{clean_username}@patient.internal"
     user_id = None
 
     # 4. Create user in Supabase Auth if client is available
     if client:
         try:
-            admin_res = client.auth.admin.create_user({
-                "email": internal_email,
+            auth_attributes = {
                 "password": payload.password,
-                "email_confirm": True,
                 "phone": user_phone,
                 "phone_confirm": True,
                 "user_metadata": {
@@ -121,12 +133,22 @@ def register_patient(
                     "full_name": payload.full_name.strip(),
                     "role": "patient",
                 },
-            })
+            }
+            if clean_email:
+                auth_attributes["email"] = clean_email
+                auth_attributes["email_confirm"] = True
+
+            admin_res = client.auth.admin.create_user(auth_attributes)
             if admin_res and admin_res.user:
                 user_id = UUID(admin_res.user.id)
         except Exception as auth_err:
             err_str = str(auth_err).lower()
             if "already registered" in err_str or "already exists" in err_str or "duplicate" in err_str:
+                if clean_email and "email" in err_str:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="An account is already associated with this email address. Please use another email or sign in.",
+                    )
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Username is already taken. Please choose another username.",
@@ -142,7 +164,7 @@ def register_patient(
             client.table("users").upsert({
                 "id": str(user_id),
                 "username": clean_username,
-                "email": internal_email,
+                "email": clean_email,
                 "phone_e164": user_phone,
                 "role": "patient",
                 "is_active": True,
@@ -162,7 +184,7 @@ def register_patient(
             logger.warning("Could not insert into user_credentials table: %s", e)
 
     # 7. Create profile in public.patient_profiles
-    dob_str = str(payload.date_of_birth or "2000-01-01")
+    dob_str = payload.date_of_birth.isoformat() if payload.date_of_birth else "2000-01-01"
     profile_id = str(uuid4())
     profile_data = {
         "id": profile_id,
@@ -486,6 +508,20 @@ def get_my_patient_profile(
         )
         profile_read_dedup.mark_logged(user_id_str)
 
+    user_email = None
+    if client:
+        try:
+            res_user = client.table("users").select("email").eq("id", str(current_user.id)).execute()
+            if res_user.data and len(res_user.data) > 0:
+                raw_email = res_user.data[0].get("email")
+                if raw_email and not raw_email.endswith("@patient.internal"):
+                    user_email = raw_email
+        except Exception as e:
+            logger.debug("Failed fetching user email: %s", e)
+
+    if not user_email and current_user.email and not current_user.email.endswith("@patient.internal"):
+        user_email = current_user.email
+
     return PatientProfileResponse(
         id=UUID(profile["id"]),
         patient_id=profile["patient_id"],
@@ -496,6 +532,7 @@ def get_my_patient_profile(
         emergency_contact_phone=profile.get("emergency_contact_phone"),
         verification_status=profile["verification_status"],
         phone_masked=mask_phone(current_user.phone) if current_user.phone else None,
+        email=user_email,
         created_at=profile["created_at"],
         updated_at=profile.get("updated_at"),
         masked_aadhaar_ref=profile.get("masked_aadhaar_ref"),
@@ -655,6 +692,29 @@ def update_my_patient_profile(
             detail=f"Could not update patient profile: {err_msg}",
         )
 
+    # If date_of_birth was provided in the update, persist it
+    if payload.date_of_birth:
+        try:
+            update_data = {"date_of_birth": payload.date_of_birth.isoformat()}
+            up_res = client.table("patient_profiles").update(update_data).eq("id", str(profile["id"])).execute()
+            if up_res.data and len(up_res.data) > 0:
+                profile["date_of_birth"] = up_res.data[0]["date_of_birth"]
+            else:
+                profile["date_of_birth"] = update_data["date_of_birth"]
+        except Exception as dob_err:
+            logger.warning("Could not update date_of_birth: %s", dob_err)
+
+    user_email = None
+    if client:
+        try:
+            res_user = client.table("users").select("email").eq("id", str(current_user.id)).execute()
+            if res_user.data and len(res_user.data) > 0:
+                raw_email = res_user.data[0].get("email")
+                if raw_email and not raw_email.endswith("@patient.internal"):
+                    user_email = raw_email
+        except Exception:
+            pass
+
     return PatientProfileResponse(
         id=UUID(profile["id"]),
         patient_id=profile["patient_id"],
@@ -665,6 +725,7 @@ def update_my_patient_profile(
         emergency_contact_phone=profile.get("emergency_contact_phone"),
         verification_status=profile["verification_status"],
         phone_masked=mask_phone(current_user.phone) if current_user.phone else None,
+        email=user_email,
         created_at=profile["created_at"],
         updated_at=profile.get("updated_at"),
         masked_aadhaar_ref=profile.get("masked_aadhaar_ref"),

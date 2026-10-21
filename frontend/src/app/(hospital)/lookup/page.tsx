@@ -42,6 +42,7 @@ import {
   DoctorPatientLookupResponse,
   SharedReportItem,
 } from "@/lib/api";
+import { formatDateOnly } from "@/lib/utils";
 
 const DEMO_DOCTORS = [
   {
@@ -209,16 +210,7 @@ export default function DoctorPatientLookupPage() {
   };
 
   const formatDate = (dateStr?: string) => {
-    if (!dateStr) return "Recorded";
-    try {
-      return new Date(dateStr).toLocaleDateString("en-GB", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      });
-    } catch {
-      return dateStr;
-    }
+    return formatDateOnly(dateStr);
   };
 
   // ---------------------------------------------------------------------------
@@ -688,7 +680,11 @@ export default function DoctorPatientLookupPage() {
                           <span>Updated: {formatDate(report.report_date)}</span>
                           <span className="font-semibold text-slate-700">
                             {report.file_size_bytes
-                              ? `${Math.round(report.file_size_bytes / 1024)} KB`
+                              ? report.file_size_bytes < 1024 * 1024
+                                ? `${Math.round(report.file_size_bytes / 1024)} KB`
+                                : `${(report.file_size_bytes / (1024 * 1024)).toFixed(1)} MB`
+                              : report.mime_type?.startsWith("image/")
+                              ? "IMAGE"
                               : "PDF"}
                           </span>
                         </div>
@@ -709,7 +705,8 @@ export default function DoctorPatientLookupPage() {
                             </a>
                             <a
                               href={report.download_url}
-                              download={`${report.report_id}.pdf`}
+                              target="_blank"
+                              rel="noopener noreferrer"
                               className="py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm"
                             >
                               <Download className="w-3.5 h-3.5" />

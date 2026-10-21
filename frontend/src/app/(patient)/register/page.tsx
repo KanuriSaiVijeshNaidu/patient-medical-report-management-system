@@ -8,6 +8,8 @@ import {
   User,
   Lock,
   Phone,
+  Mail,
+  Calendar,
   AlertCircle,
   Loader2,
   ArrowRight,
@@ -27,6 +29,8 @@ export default function PatientRegisterPage() {
   const [gender, setGender] = useState<"male" | "female" | "other" | "prefer_not_to_say">("prefer_not_to_say");
   const [phone, setPhone] = useState("");
   const [bloodGroup, setBloodGroup] = useState<string>("");
+  const [dob, setDob] = useState("");
+  const [email, setEmail] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -36,6 +40,8 @@ export default function PatientRegisterPage() {
     username: string;
   } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  const todayStr = new Date().toISOString().split("T")[0];
 
   const handleCopyId = () => {
     if (registeredResult?.patient_id) {
@@ -85,6 +91,25 @@ export default function PatientRegisterPage() {
       return;
     }
 
+    if (!dob) {
+      setErrorMsg("Please select your date of birth.");
+      return;
+    }
+
+    if (dob > todayStr) {
+      setErrorMsg("Date of birth cannot be in the future.");
+      return;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(cleanEmail)) {
+        setErrorMsg("Please enter a valid email address format (e.g. name@example.com), or leave it empty.");
+        return;
+      }
+    }
+
     setLoading(true);
     try {
       const payload: PatientRegisterInput = {
@@ -94,6 +119,8 @@ export default function PatientRegisterPage() {
         gender,
         phone: cleanedPhone,
         blood_group: bloodGroup,
+        date_of_birth: dob,
+        email: cleanEmail || undefined,
       };
 
       const res = await registerPatient(payload);
@@ -255,8 +282,28 @@ export default function PatientRegisterPage() {
             </div>
           </div>
 
-          {/* Gender & Blood Group Grid */}
+          {/* Date of Birth & Gender Grid */}
           <div className="grid sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">
+                Date of Birth *
+              </label>
+              <div className="relative">
+                <Calendar className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                <input
+                  type="date"
+                  value={dob}
+                  onChange={(e) => setDob(e.target.value)}
+                  max={todayStr}
+                  className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 text-sm bg-white"
+                  required
+                />
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Used for clinical records & verification.
+              </p>
+            </div>
+
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">
                 Gender *
@@ -272,6 +319,29 @@ export default function PatientRegisterPage() {
                 <option value="other">Other</option>
                 <option value="prefer_not_to_say">Prefer not to say</option>
               </select>
+            </div>
+          </div>
+
+          {/* Phone Number & Blood Group Grid */}
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">
+                Phone Number (with Country Code) *
+              </label>
+              <div className="relative">
+                <Phone className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="e.g. +91 98765 43210"
+                  className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 text-sm"
+                  required
+                />
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                e.g. +91 for India.
+              </p>
             </div>
 
             <div>
@@ -297,24 +367,26 @@ export default function PatientRegisterPage() {
             </div>
           </div>
 
-          {/* Phone Number with country code */}
+          {/* Email Address (Optional) */}
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">
-              Phone Number (with Country Code) *
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Email Address
+              </label>
+              <span className="text-[11px] text-slate-400 font-medium">Optional</span>
+            </div>
             <div className="relative">
-              <Phone className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+              <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
               <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="e.g. +91 98765 43210"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="e.g. yourname@example.com (optional)"
                 className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 text-sm"
-                required
               />
             </div>
             <p className="text-[11px] text-slate-500 mt-1">
-              Include country code (e.g. +91 for India).
+              Optional notification email for report updates.
             </p>
           </div>
 

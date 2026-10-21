@@ -24,6 +24,7 @@ export interface PatientProfile {
   emergency_contact_phone?: string;
   verification_status: string;
   phone_masked?: string;
+  email?: string | null;
   created_at: string;
   updated_at?: string;
   masked_aadhaar_ref?: string;
@@ -36,6 +37,8 @@ export interface PatientRegisterInput {
   gender: "male" | "female" | "other" | "prefer_not_to_say";
   phone: string;
   blood_group: string;
+  date_of_birth?: string;
+  email?: string;
 }
 
 export interface PatientRegisterResult {
@@ -71,6 +74,7 @@ export interface PatientProfileInput {
 export interface PatientProfileUpdateInput {
   blood_group?: string;
   emergency_contact_phone?: string;
+  date_of_birth?: string;
 }
 
 export interface RecoveryInitiateInput {
